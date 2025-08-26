@@ -135,10 +135,16 @@ def build_multitask_model(num_img_classes: int, num_tab_features: int):
 
 
 # ==============================
-# Training Functions
+# Training Functions (plain implementations + tool wrappers)
 # ==============================
-@mcp.tool
-def train_text_branch(model, X_train, Y_train, X_val, Y_val, num_img_classes):
+
+def _train_text_branch_impl(model, X_train, Y_train, X_val, Y_val, num_img_classes):
+    # Ensure inputs are numpy arrays with correct shapes/dtypes
+    X_train = np.array(X_train, dtype=np.float32)
+    X_val = np.array(X_val, dtype=np.float32)
+    Y_train = np.array(Y_train, dtype=np.float32).reshape(-1, 1)
+    Y_val = np.array(Y_val, dtype=np.float32).reshape(-1, 1)
+
     for layer in model.layers:
         layer.trainable = "txt_" in layer.name or layer.name == "txt_output"
     model.compile(optimizer="adam",
@@ -155,11 +161,15 @@ def train_text_branch(model, X_train, Y_train, X_val, Y_val, num_img_classes):
         epochs=5, batch_size=8
     )
     y_pred_txt = (model.predict({"tabular_input": X_val, "image_input": np.zeros((len(X_val), 256, 256, 3))})[1] > 0.5).astype(int)
-    return {"report": classification_report(Y_val, y_pred_txt)}
-
+    # flatten labels for sklearn
+    return {"report": classification_report(Y_val.flatten(), y_pred_txt.flatten())}
 
 @mcp.tool
-def train_image_branch(model, train_img_gen, val_img_gen, num_tab_features):
+def train_text_branch(model, X_train, Y_train, X_val, Y_val, num_img_classes):
+    return _train_text_branch_impl(model, X_train, Y_train, X_val, Y_val, num_img_classes)
+
+
+def _train_image_branch_impl(model, train_img_gen, val_img_gen, num_tab_features):
     for layer in model.layers:
         layer.trainable = "img_" in layer.name or layer.name == "img_output"
     model.compile(optimizer="adam",
@@ -192,6 +202,9 @@ def train_image_branch(model, train_img_gen, val_img_gen, num_tab_features):
     y_true_img = np.argmax(Y_imgs, axis=1)
     return {"report": classification_report(y_true_img, y_pred_img, target_names=list(train_img_gen.class_indices.keys()))}
 
+@mcp.tool
+def train_image_branch(model, train_img_gen, val_img_gen, num_tab_features):
+    return _train_image_branch_impl(model, train_img_gen, val_img_gen, num_tab_features)
 
 # ==============================
 # Full Pipeline
@@ -250,6 +263,55 @@ async def build_multitask_model_route(request):
 async def train_and_evaluate_full_pipeline_route(request):
     # This runs the full pipeline and can take a while; no arguments expected.
     result = _train_and_evaluate_full_pipeline_impl()
+    return JSONResponse(result, headers=CORS_HEADERS)
+
+
+# Helper to create an actual Keras Model object (used by training wrappers)
+def _create_multitask_model_object(num_img_classes: int, num_tab_features: int):
+    image_input = Input(shape=(256, 256, 3), name='image_input')
+    base_model = DenseNet121(weights='imagenet', include_top=False, input_tensor=image_input)
+    for layer in base_model.layers:
+        layer.trainable = False
+    x_img = GlobalAveragePooling2D()(base_model.output)
+    x_img = Dense(512, activation='relu', name="img_dense1")(x_img)
+    x_img = Dropout(0.5)(x_img)
+    img_output = Dense(num_img_classes, activation='softmax', name='img_output')(x_img)
+
+    tab_input = Input(shape=(num_tab_features,), name='tabular_input')
+    x_tab = Dense(64, activation='relu', name="txt_dense1")(tab_input)
+    x_tab = Dropout(0.3)(x_tab)
+    x_tab = Dense(32, activation='relu', name="txt_dense2")(x_tab)
+    txt_output = Dense(1, activation='sigmoid', name='txt_output')(x_tab)
+
+    model = Model(inputs=[image_input, tab_input], outputs=[img_output, txt_output])
+    return model
+
+
+# HTTP wrapper to train only the text branch using in-process tabular data and a fresh model
+@mcp.custom_route("/train_text_branch", methods=["POST"])
+async def train_text_branch_route(request):
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    num_img_classes = int(body.get("num_img_classes", 2))
+    tab = _load_tabular_data_impl()
+    model_obj = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])    
+    try:
+        result = _train_text_branch_impl(model_obj, tab["X_train"], tab["Y_train"], tab["X_val"], tab["Y_val"], num_img_classes)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500, headers=CORS_HEADERS)
+    return JSONResponse(result, headers=CORS_HEADERS)
+
+
+# HTTP wrapper to train only the image branch using in-process image generators and a fresh model
+@mcp.custom_route("/train_image_branch", methods=["POST"])
+async def train_image_branch_route(request):
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    num_tab_features = int(body.get("num_tab_features", 30))
+    img = _load_image_data_impl()
+    model_obj = _create_multitask_model_object(num_img_classes=img["num_classes"], num_tab_features=num_tab_features)
+    try:
+        result = _train_image_branch_impl(model_obj, img["train_img_gen"], img["val_img_gen"], num_tab_features)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500, headers=CORS_HEADERS)
     return JSONResponse(result, headers=CORS_HEADERS)
 
 
