@@ -1,3 +1,6 @@
 Dataset_BUSI_with_GT
 model.h5
 __pycache__
+agent/frontend/node_modules
+agent/.github
+agent/.venv

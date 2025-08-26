@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "agent-llm-server": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["server.py"]
+    }
+  }
+}
