@@ -36,7 +36,7 @@ async def health_check(request):
 
 # Handle preflight (OPTIONS) for any path so browser preflight requests succeed.
 @mcp.custom_route("/{path:path}", methods=["OPTIONS"])
-async def cors_preflight(request, path):
+async def cors_preflight(request, path: str = ""):
     headers = {
         "Access-Control-Allow-Origin": "http://localhost:5173",
         "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
@@ -49,8 +49,10 @@ async def cors_preflight(request, path):
 # ==============================
 # Data Preparation
 # ==============================
-@mcp.tool
-def load_image_data(train_data="Dataset_BUSI_with_GT", image_size=(256, 256), batch_size=16):
+# Move implementation into plain functions and keep @mcp.tool wrappers thin so other code
+# (HTTP wrappers) can call the implementations directly.
+
+def _load_image_data_impl(train_data="Dataset_BUSI_with_GT", image_size=(256, 256), batch_size=16):
     train_files = [i for i in glob.glob(train_data + "/*/*")]
     labels = [os.path.dirname(i).split("/")[-1] for i in train_files]
     training_data = pd.DataFrame({"Path": train_files, "Label": labels})
@@ -71,9 +73,13 @@ def load_image_data(train_data="Dataset_BUSI_with_GT", image_size=(256, 256), ba
         "val_img_gen": val_img_gen
     }
 
-
 @mcp.tool
-def load_tabular_data():
+def load_image_data(train_data="Dataset_BUSI_with_GT", image_size=(256, 256), batch_size=16):
+    # tool wrapper that delegates to the plain implementation
+    return _load_image_data_impl(train_data=train_data, image_size=image_size, batch_size=batch_size)
+
+
+def _load_tabular_data_impl():
     dataset = load_breast_cancer()
     X_tab = dataset.data
     Y_tab = dataset.target
@@ -88,12 +94,16 @@ def load_tabular_data():
         "num_features": X_tab.shape[1]
     }
 
+@mcp.tool
+def load_tabular_data():
+    return _load_tabular_data_impl()
+
 
 # ==============================
 # Model Construction
 # ==============================
-@mcp.tool
-def build_multitask_model(num_img_classes: int, num_tab_features: int):
+
+def _build_multitask_model_impl(num_img_classes: int, num_tab_features: int):
     image_input = Input(shape=(256, 256, 3), name='image_input')
     base_model = DenseNet121(weights='imagenet', include_top=False, input_tensor=image_input)
     for layer in base_model.layers:
@@ -118,6 +128,10 @@ def build_multitask_model(num_img_classes: int, num_tab_features: int):
         "num_layers": len(model.layers),
         "trainable_layers": sum([1 for layer in model.layers if layer.trainable]),
     }
+
+@mcp.tool
+def build_multitask_model(num_img_classes: int, num_tab_features: int):
+    return _build_multitask_model_impl(num_img_classes=num_img_classes, num_tab_features=num_tab_features)
 
 
 # ==============================
@@ -182,15 +196,67 @@ def train_image_branch(model, train_img_gen, val_img_gen, num_tab_features):
 # ==============================
 # Full Pipeline
 # ==============================
-@mcp.tool
-def train_and_evaluate_full_pipeline():
-    img_data = load_image_data()
-    tab_data = load_tabular_data()
-    model = build_multitask_model(img_data["num_classes"], tab_data["num_features"])
+
+def _train_and_evaluate_full_pipeline_impl():
+    img_data = _load_image_data_impl()
+    tab_data = _load_tabular_data_impl()
+    model = _build_multitask_model_impl(img_data["num_classes"], tab_data["num_features"])
     txt_result = train_text_branch(model, tab_data["X_train"], tab_data["Y_train"], tab_data["X_val"], tab_data["Y_val"], img_data["num_classes"])
     img_result = train_image_branch(model, img_data["train_img_gen"], img_data["val_img_gen"], tab_data["num_features"])
     return {"textual_report": txt_result["report"], "image_report": img_result["report"]}
 
+@mcp.tool
+def train_and_evaluate_full_pipeline():
+    return _train_and_evaluate_full_pipeline_impl()
+
+
+# Provide simple HTTP wrappers for key tools so the frontend can POST to them directly.
+# These wrappers add CORS headers and return only JSON-serializable data.
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "http://localhost:5173",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Allow-Credentials": "true",
+}
+
+@mcp.custom_route("/load_image_data", methods=["POST"])
+async def load_image_data_route(request):
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    train_data = body.get("train_data", "Dataset_BUSI_with_GT")
+    image_size = tuple(body.get("image_size", (256, 256)))
+    batch_size = int(body.get("batch_size", 16))
+    result = _load_image_data_impl(train_data=train_data, image_size=image_size, batch_size=batch_size)
+    # Remove non-serializable generators before returning
+    safe = {k: v for k, v in result.items() if k not in ("train_img_gen", "val_img_gen")}
+    return JSONResponse(safe, headers=CORS_HEADERS)
+
+
+@mcp.custom_route("/load_tabular_data", methods=["POST"])
+async def load_tabular_data_route(request):
+    result = _load_tabular_data_impl()
+    return JSONResponse(result, headers=CORS_HEADERS)
+
+
+@mcp.custom_route("/build_multitask_model", methods=["POST"])
+async def build_multitask_model_route(request):
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    num_img_classes = int(body.get("num_img_classes", 2))
+    num_tab_features = int(body.get("num_tab_features", 30))
+    result = _build_multitask_model_impl(num_img_classes=num_img_classes, num_tab_features=num_tab_features)
+    return JSONResponse(result, headers=CORS_HEADERS)
+
+
+@mcp.custom_route("/train_and_evaluate_full_pipeline", methods=["POST"])
+async def train_and_evaluate_full_pipeline_route(request):
+    # This runs the full pipeline and can take a while; no arguments expected.
+    result = _train_and_evaluate_full_pipeline_impl()
+    return JSONResponse(result, headers=CORS_HEADERS)
+
+
+# Note: training-specific endpoints like train_text_branch and train_image_branch expect complex
+# Python objects (models/generators). They are not wrapped here. If you need them over HTTP we
+# should design a serialized protocol or a job system. For now the frontend can use the
+# above wrapper endpoints for basic interactions.
 
 if __name__ == "__main__":
     mcp.run(transport="http")  # exposes /health and all @mcp.tool automatically

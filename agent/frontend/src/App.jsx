@@ -23,13 +23,25 @@ function App(){
     }
   }
 
-  async function callTool(path){
+  async function callTool(path, payload = {}){
     setRunning(true);
     pushLog(`Calling ${path}...`);
     try{
-      const res = await fetch(`${API_BASE}${path}`);
-      const data = await res.json();
-      pushLog(JSON.stringify(data, null, 2));
+      const res = await fetch(`${API_BASE}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const text = await res.text();
+      let data;
+      try{ data = JSON.parse(text); } catch { data = text; }
+
+      if(!res.ok){
+        pushLog(`Error ${res.status}: ${typeof data === 'string' ? data : JSON.stringify(data)}`);
+      } else {
+        pushLog(JSON.stringify(data, null, 2));
+      }
     }catch(e){
       pushLog(String(e));
     }
