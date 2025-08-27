@@ -3,13 +3,14 @@
 An end-to-end example that trains a multi-task Keras model for breast ultrasound image classification and exposes it through an HTTP + MCP (Model Context Protocol) server with a lightweight React frontend for interaction.
 
 The project demonstrates:
+
 - Multi-input, multi-output Keras model combining an image branch (DenseNet121) and a tabular branch (sklearn breast_cancer dataset).
 - Simple HTTP routes using FastMCP’s custom routes for training, evaluation, confusion matrices, and inference.
 - A small React UI to kick off training, visualize confusion matrices, and classify uploaded images.
 
 ## Repository layout
 
-```
+```bash
 agent/
   server.py                # FastMCP server: HTTP routes, training, prediction
   api.py                   # (Optional) FastAPI client for MCP tools (not required to run)
@@ -40,10 +41,12 @@ The model is multi-input, multi-output:
   - Head: Dense(64, relu) → Dropout(0.3) → Dense(32, relu) → Dense(1, sigmoid) as `txt_output`
 
 Training strategy (two-stage):
+
 - Text branch: Only the tabular head trains; the image head loss weight is 0 during this phase.
 - Image branch: Only the image head trains; the tabular head loss weight is 0 and dummy zeros are fed to `tabular_input`.
 
 Saving:
+
 - After the full pipeline training, the server saves the model to `saved_models/`:
   - Timestamped: `multitask_model_YYYYMMDD_HHMMSS.keras`
   - Stable latest symlink/file: `multitask_model_latest.keras`
@@ -61,6 +64,7 @@ Saving:
 - Default HTTP base assumed by the frontend: `http://localhost:8000`.
 
 Key routes:
+
 - GET `/health` — health check
 - POST `/load_image_data` — returns dataset stats (not the generators)
 - POST `/load_tabular_data` — returns train/val splits for the sklearn dataset (as JSON lists)
@@ -73,6 +77,7 @@ Key routes:
 - POST `/predict_image` — classify an uploaded image using a previously saved model
 
 Inference specifics:
+
 - `/predict_image` accepts multipart/form-data with `image` and `model_path`, or JSON with `image_base64`.
 - It loads the Keras model once and caches it, and looks for labels sidecars automatically.
 - Supports multi-input models; non-image inputs are filled with zeros for inference.
@@ -80,6 +85,7 @@ Inference specifics:
 ### Frontend (Vite + React)
 
 UI features (`frontend/src/App.jsx`):
+
 - Health, load data, build model, train branch buttons for quick actions.
 - Confusion matrix: request JSON or PNG preview for chosen modality.
 - Image classification panel:
@@ -91,6 +97,7 @@ UI features (`frontend/src/App.jsx`):
 ## Setup
 
 ### Prerequisites
+
 - Python 3.9+ recommended
 - Node 18+ recommended
 - Disk space sufficient for the dataset in `Dataset_BUSI_with_GT/`
@@ -114,6 +121,7 @@ python server.py
 The HTTP server will listen on `http://localhost:8000` by default. CORS is configured for `http://localhost:5173` (Vite).
 
 Optional environment variables:
+
 - `MODEL_PATH` — default model path used by `/predict_image` if `model_path` isn’t provided in the request.
 
 ### Frontend
@@ -163,5 +171,5 @@ All responses include CORS headers for `http://localhost:5173`.
 
 ## References
 
-- Breast Cancer Classification (PyTorch) by vishrut-b: https://github.com/vishrut-b/ML-Project-with-PyTorch-Breast-Cancer-Classification/tree/main
-- Breast Cancer Image Classification with DenseNet121 by m3mentomor1: https://github.com/m3mentomor1/Breast-Cancer-Image-Classification-with-DenseNet121
+- Breast Cancer Classification (PyTorch) by vishrut-b: <https://github.com/vishrut-b/ML-Project-with-PyTorch-Breast-Cancer-Classification/tree/main>
+- Breast Cancer Image Classification with DenseNet121 by m3mentomor1: <https://github.com/m3mentomor1/Breast-Cancer-Image-Classification-with-DenseNet121>
