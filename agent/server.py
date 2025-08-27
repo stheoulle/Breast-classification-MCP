@@ -1,5 +1,6 @@
 from fastmcp import FastMCP
 from starlette.responses import PlainTextResponse, JSONResponse
+import logging
 import os, glob
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
@@ -211,12 +212,37 @@ def train_image_branch(model, train_img_gen, val_img_gen, num_tab_features):
 # ==============================
 
 def _train_and_evaluate_full_pipeline_impl():
+    # Load data using the local implementations
     img_data = _load_image_data_impl()
     tab_data = _load_tabular_data_impl()
-    model = _build_multitask_model_impl(img_data["num_classes"], tab_data["num_features"])
-    txt_result = train_text_branch(model, tab_data["X_train"], tab_data["Y_train"], tab_data["X_val"], tab_data["Y_val"], img_data["num_classes"])
-    img_result = train_image_branch(model, img_data["train_img_gen"], img_data["val_img_gen"], tab_data["num_features"])
-    return {"textual_report": txt_result["report"], "image_report": img_result["report"]}
+
+    # Build a real Keras model object for training (the _build_* impl returns metadata only)
+    model = _create_multitask_model_object(
+        num_img_classes=img_data["num_classes"],
+        num_tab_features=tab_data["num_features"],
+    )
+
+    # Train text and image branches using the in-process implementations
+    txt_result = _train_text_branch_impl(
+        model,
+        tab_data["X_train"],
+        tab_data["Y_train"],
+        tab_data["X_val"],
+        tab_data["Y_val"],
+        img_data["num_classes"],
+    )
+
+    img_result = _train_image_branch_impl(
+        model,
+        img_data["train_img_gen"],
+        img_data["val_img_gen"],
+        tab_data["num_features"],
+    )
+
+    return {
+        "textual_report": txt_result["report"],
+        "image_report": img_result["report"],
+    }
 
 @mcp.tool
 def train_and_evaluate_full_pipeline():
