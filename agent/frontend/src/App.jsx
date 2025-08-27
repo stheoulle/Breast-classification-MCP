@@ -6,6 +6,12 @@ function App(){
   const [health, setHealth] = useState(null);
   const [logs, setLogs] = useState([]);
   const [running, setRunning] = useState(false);
+  // Confusion matrix controls
+  const [modality, setModality] = useState('tabular'); // 'tabular' | 'image'
+  const [epochs, setEpochs] = useState(5);
+  const [batchSize, setBatchSize] = useState(8); // used for tabular
+  const [numImgClasses, setNumImgClasses] = useState(2); // used when modality === 'tabular'
+  const [numTabFeatures, setNumTabFeatures] = useState(30); // used when modality === 'image'
   const logEndRef = useRef(null);
 
   useEffect(()=>{
@@ -80,6 +86,69 @@ function App(){
         <button onClick={()=>callTool('/train_text_branch')} disabled={running}>Train Text Branch</button>
         <button onClick={()=>callTool('/train_image_branch')} disabled={running}>Train Image Branch</button>
         <button onClick={()=>callTool('/train_and_evaluate_full_pipeline')} disabled={running}>Train Full Pipeline</button>
+      </div>
+
+      <div className="panel">
+        <h2>Confusion Matrix</h2>
+        <div className="grid">
+          <label>
+            Modality
+            <select value={modality} onChange={(e)=>setModality(e.target.value)} disabled={running}>
+              <option value="tabular">Tabular</option>
+              <option value="image">Image</option>
+            </select>
+          </label>
+          <label>
+            Epochs
+            <input type="number" min="1" value={epochs} onChange={(e)=>setEpochs(parseInt(e.target.value||'1',10))} disabled={running} />
+          </label>
+          {modality === 'tabular' && (
+            <>
+              <label>
+                Batch size
+                <input type="number" min="1" value={batchSize} onChange={(e)=>setBatchSize(parseInt(e.target.value||'1',10))} disabled={running} />
+              </label>
+              <label>
+                Num image classes
+                <input type="number" min="2" value={numImgClasses} onChange={(e)=>setNumImgClasses(parseInt(e.target.value||'2',10))} disabled={running} />
+              </label>
+            </>
+          )}
+          {modality === 'image' && (
+            <label>
+              Num tabular features
+              <input type="number" min="1" value={numTabFeatures} onChange={(e)=>setNumTabFeatures(parseInt(e.target.value||'1',10))} disabled={running} />
+            </label>
+          )}
+        </div>
+        <div className="actions">
+          <button
+            disabled={running}
+            onClick={()=>{
+              const payload = {
+                modality,
+                epochs,
+                ...(modality === 'tabular' ? { batch_size: batchSize, num_img_classes: numImgClasses } : {}),
+                ...(modality === 'image' ? { num_tab_features: numTabFeatures } : {}),
+              };
+              callTool('/confusion_matrix', payload);
+            }}
+          >
+            Get Confusion Matrix
+          </button>
+          <button
+            disabled={running}
+            onClick={()=>callTool('/confusion_matrix', { modality: 'tabular', epochs: 3, batch_size: 8, num_img_classes: 2 })}
+          >
+            Quick: Tabular
+          </button>
+          <button
+            disabled={running}
+            onClick={()=>callTool('/confusion_matrix', { modality: 'image', epochs: 2, num_tab_features: 30 })}
+          >
+            Quick: Image
+          </button>
+        </div>
       </div>
 
       <div className="log">
