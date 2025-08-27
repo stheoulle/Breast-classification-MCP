@@ -12,6 +12,7 @@ function App(){
   const [batchSize, setBatchSize] = useState(8); // used for tabular
   const [numImgClasses, setNumImgClasses] = useState(2); // used when modality === 'tabular'
   const [numTabFeatures, setNumTabFeatures] = useState(30); // used when modality === 'image'
+  const [cmImageUrl, setCmImageUrl] = useState(null);
   const logEndRef = useRef(null);
 
   useEffect(()=>{
@@ -48,6 +49,33 @@ function App(){
         pushLog(`Error ${res.status}: ${typeof data === 'string' ? data : JSON.stringify(data)}`, 'error');
       } else {
         pushLog(typeof data === 'string' ? data : JSON.stringify(data, null, 2), 'success');
+      }
+    }catch(e){
+      pushLog(String(e), 'error');
+    }
+    setRunning(false);
+  }
+
+  async function fetchConfusionMatrixImage(payload = {}){
+    setRunning(true);
+    pushLog(`Calling /confusion_matrix_image...`, 'info');
+    try{
+      const res = await fetch(`${API_BASE}/confusion_matrix_image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if(!res.ok){
+        const text = await res.text();
+        pushLog(`Error ${res.status}: ${text}`, 'error');
+      } else {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        setCmImageUrl(prev => {
+          if(prev) URL.revokeObjectURL(prev);
+          return url;
+        });
+        pushLog(`Confusion matrix image updated.`, 'success');
       }
     }catch(e){
       pushLog(String(e), 'error');
@@ -138,6 +166,20 @@ function App(){
           </button>
           <button
             disabled={running}
+            onClick={()=>{
+              const payload = {
+                modality,
+                epochs,
+                ...(modality === 'tabular' ? { batch_size: batchSize, num_img_classes: numImgClasses } : {}),
+                ...(modality === 'image' ? { num_tab_features: numTabFeatures } : {}),
+              };
+              fetchConfusionMatrixImage(payload);
+            }}
+          >
+            Plot Confusion Matrix (PNG)
+          </button>
+          <button
+            disabled={running}
             onClick={()=>callTool('/confusion_matrix', { modality: 'tabular', epochs: 3, batch_size: 8, num_img_classes: 2 })}
           >
             Quick: Tabular
@@ -149,6 +191,12 @@ function App(){
             Quick: Image
           </button>
         </div>
+        {cmImageUrl && (
+          <div className="preview">
+            <h3>Confusion Matrix Preview</h3>
+            <img src={cmImageUrl} alt="Confusion matrix" style={{maxWidth:'100%', height:'auto', border:'1px solid #ddd'}} />
+          </div>
+        )}
       </div>
 
       <div className="log">

@@ -1,5 +1,5 @@
 from fastmcp import FastMCP
-from starlette.responses import PlainTextResponse, JSONResponse
+from starlette.responses import PlainTextResponse, JSONResponse, Response
 import logging
 import os, glob
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -15,6 +15,10 @@ from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report, confusion_matrix
+import matplotlib
+matplotlib.use("Agg")  # non-GUI backend for servers
+import matplotlib.pyplot as plt
+from io import BytesIO
 
 mcp = FastMCP("agent-llm-server")
 
@@ -493,6 +497,147 @@ async def confusion_matrix_route(request):
             return JSONResponse({"error": str(e)}, status_code=500, headers=CORS_HEADERS)
     else:
         return JSONResponse({"error": f"Unsupported modality: {modality}"}, status_code=400, headers=CORS_HEADERS)
+
+
+# ==============================
+# Confusion Matrix Plot (PNG)
+# ==============================
+@mcp.custom_route("/confusion_matrix_image", methods=["POST"])
+async def confusion_matrix_image_route(request):
+    """Return a PNG image rendering of the confusion matrix for the chosen modality."""
+    try:
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception:
+        body = {}
+
+    modality = (body.get("modality") or body.get("branch") or "tabular").lower()
+
+    # Compute confusion matrix and labels using the same logic as the JSON endpoint
+    try:
+        if modality == "tabular":
+            num_img_classes = int(body.get("num_img_classes", 2))
+            epochs = int(body.get("epochs", 5))
+            batch_size = int(body.get("batch_size", 8))
+
+            tab = _load_tabular_data_impl()
+            X_train = np.array(tab["X_train"], dtype=np.float32)
+            Y_train = np.array(tab["Y_train"], dtype=np.float32).reshape(-1, 1)
+            X_val = np.array(tab["X_val"], dtype=np.float32)
+            Y_val = np.array(tab["Y_val"], dtype=np.float32).reshape(-1, 1)
+
+            model = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
+            for layer in model.layers:
+                layer.trainable = "txt_" in layer.name or layer.name == "txt_output"
+            model.compile(
+                optimizer="adam",
+                loss={"img_output": "binary_crossentropy", "txt_output": "binary_crossentropy"},
+                loss_weights={"img_output": 0.0, "txt_output": 1.0},
+                metrics={"txt_output": "accuracy"},
+            )
+            model.fit(
+                {"tabular_input": X_train, "image_input": np.zeros((len(X_train), 256, 256, 3))},
+                {"txt_output": Y_train, "img_output": np.zeros((len(X_train), num_img_classes))},
+                validation_data=(
+                    {"tabular_input": X_val, "image_input": np.zeros((len(X_val), 256, 256, 3))},
+                    {"txt_output": Y_val, "img_output": np.zeros((len(X_val), num_img_classes))},
+                ),
+                epochs=epochs,
+                batch_size=batch_size,
+                verbose=0,
+            )
+            y_pred_prob = model.predict({"tabular_input": X_val, "image_input": np.zeros((len(X_val), 256, 256, 3))})[1]
+            y_pred = (y_pred_prob > 0.5).astype(int).reshape(-1)
+            y_true = Y_val.reshape(-1).astype(int)
+            labels = ["class_0", "class_1"]
+            cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+
+        elif modality == "image":
+            num_tab_features = int(body.get("num_tab_features", 30))
+            epochs = int(body.get("epochs", 10))
+
+            img = _load_image_data_impl()
+            num_classes = img["num_classes"]
+            class_indices = img["class_indices"]
+            labels = [name for name, _idx in sorted(class_indices.items(), key=lambda kv: kv[1])]
+
+            model = _create_multitask_model_object(num_img_classes=num_classes, num_tab_features=num_tab_features)
+            for layer in model.layers:
+                layer.trainable = "img_" in layer.name or layer.name == "img_output"
+            model.compile(
+                optimizer="adam",
+                loss={"img_output": "categorical_crossentropy", "txt_output": "binary_crossentropy"},
+                loss_weights={"img_output": 1.0, "txt_output": 0.0},
+                metrics={"img_output": "accuracy"},
+            )
+
+            def generator_with_dummy_tab(img_gen):
+                while True:
+                    X_img, Y_img = next(img_gen)
+                    yield {
+                        "image_input": X_img,
+                        "tabular_input": np.zeros((X_img.shape[0], num_tab_features)),
+                    }, {
+                        "img_output": Y_img,
+                        "txt_output": np.zeros((X_img.shape[0], 1)),
+                    }
+
+            model.fit(
+                generator_with_dummy_tab(img["train_img_gen"]),
+                validation_data=generator_with_dummy_tab(img["val_img_gen"]),
+                steps_per_epoch=len(img["train_img_gen"]),
+                validation_steps=len(img["val_img_gen"]),
+                epochs=epochs,
+                verbose=0,
+            )
+
+            # Collect validation set
+            X_imgs, Y_imgs = [], []
+            for batch in img["val_img_gen"]:
+                X_imgs.append(batch[0])
+                Y_imgs.append(batch[1])
+                if len(X_imgs) * img["val_img_gen"].batch_size >= img["val_img_gen"].n:
+                    break
+            X_imgs = np.concatenate(X_imgs)
+            Y_imgs = np.concatenate(Y_imgs)
+
+            y_pred_logits = model.predict({
+                "image_input": X_imgs,
+                "tabular_input": np.zeros((len(X_imgs), num_tab_features)),
+            })[0]
+            y_pred = np.argmax(y_pred_logits, axis=1)
+            y_true = np.argmax(Y_imgs, axis=1)
+            cm = confusion_matrix(y_true, y_pred, labels=list(range(len(labels))))
+        else:
+            return JSONResponse({"error": f"Unsupported modality: {modality}"}, status_code=400, headers=CORS_HEADERS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500, headers=CORS_HEADERS)
+
+    # Plot confusion matrix
+    fig, ax = plt.subplots(figsize=(6, 5), dpi=150)
+    im = ax.imshow(cm, interpolation='nearest', cmap='Blues')
+    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.set(xticks=np.arange(len(labels)), yticks=np.arange(len(labels)),
+           xticklabels=labels, yticklabels=labels,
+           ylabel='True label', xlabel='Predicted label', title=f'Confusion Matrix ({modality})')
+
+    # Rotate tick labels and set alignment.
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+
+    # Annotate cells
+    thresh = cm.max() / 2.0 if cm.size else 0
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(j, i, format(cm[i, j], 'd'), ha="center", va="center",
+                    color="white" if cm[i, j] > thresh else "black")
+    fig.tight_layout()
+
+    buf = BytesIO()
+    fig.savefig(buf, format='png', bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+
+    headers = {**CORS_HEADERS, "Content-Type": "image/png"}
+    return Response(content=buf.getvalue(), media_type="image/png", headers=headers)
 
 
 # Note: training-specific endpoints like train_text_branch and train_image_branch expect complex
