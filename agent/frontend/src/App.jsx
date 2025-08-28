@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
+import Header from "./components/Header";
+import Toolbar from "./components/Toolbar";
+import ImageClassifier from "./components/ImageClassifier";
+import TabularClassifier from "./components/TabularClassifier";
+import ConfusionMatrix from "./components/ConfusionMatrix";
+import Logs from "./components/Logs";
 
 const API_BASE = window.__MCP_API_BASE__ || "http://localhost:8000";
 // If backend labels are generic (class_0, class_1, class_2), show these explicit names instead.
@@ -30,7 +36,7 @@ function App() {
   const [numImgClasses, setNumImgClasses] = useState(2); // used when modality === 'tabular'
   const [numTabFeatures, setNumTabFeatures] = useState(30); // used when modality === 'image'
   const [cmImageUrl, setCmImageUrl] = useState(null);
-  const logEndRef = useRef(null);
+  // Log scroll is handled inside Logs component
 
   useEffect(() => {
     checkHealth();
@@ -267,538 +273,71 @@ function App() {
     setLogs([]);
   }
 
-  useEffect(() => {
-    // Auto-scroll to bottom when logs update
-    logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [logs]);
+  // Log auto-scroll is encapsulated in Logs component
 
   return (
     <div className="container">
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: 16,
-        }}
-      >
-        <h1
-          style={{
-            fontWeight: 700,
-            letterSpacing: 1,
-            fontSize: "2.2rem",
-            color: "#314570",
-            margin: 0,
-          }}
-        >
-          Breast Classification MCP
-        </h1>
-        <div
-          className="status"
-          style={{
-            fontSize: "1.1rem",
-            background: "#e9eef8",
-            padding: "6px 16px",
-            borderRadius: 8,
-          }}
-        >
-          <span style={{ fontWeight: 500 }}>Health:</span>{" "}
-          <strong style={{ color: health === "UP" ? "#2ecc40" : "#ff4136" }}>
-            {health ?? "..."}
-          </strong>
-        </div>
-      </header>
-      <section className="controls" style={{ marginBottom: 24 }}>
-        <button onClick={() => checkHealth()} disabled={running}>
-          Health
-        </button>
-        <button onClick={() => callTool("/load_image_data")} disabled={running}>
-          Load Image Data
-        </button>
-        <button
-          onClick={() => callTool("/load_tabular_data")}
-          disabled={running}
-        >
-          Load Tabular Data
-        </button>
-        <button
-          onClick={() => callTool("/build_multitask_model")}
-          disabled={running}
-        >
-          Build Model
-        </button>
-        <button
-          onClick={() => callTool("/train_text_branch")}
-          disabled={running}
-        >
-          Train Text Branch
-        </button>
-        <button
-          onClick={() => callTool("/train_image_branch")}
-          disabled={running}
-        >
-          Train Image Branch
-        </button>
-        <button
-          onClick={() => callTool("/train_and_evaluate_full_pipeline")}
-          disabled={running}
-        >
-          Train Full Pipeline
-        </button>
-      </section>
+      <Header health={health} />
+      <Toolbar
+        running={running}
+        onHealth={checkHealth}
+        onLoadImageData={() => callTool("/load_image_data")}
+        onLoadTabularData={() => callTool("/load_tabular_data")}
+        onBuildModel={() => callTool("/build_multitask_model")}
+        onTrainTextBranch={() => callTool("/train_text_branch")}
+        onTrainImageBranch={() => callTool("/train_image_branch")}
+        onTrainFull={() => callTool("/train_and_evaluate_full_pipeline")}
+      />
 
-      <section
-        className="panel"
-        style={{
-          background: "#f5f7fb",
-          borderRadius: 8,
-          padding: "18px 20px",
-          marginBottom: 24,
-          boxShadow: "0 2px 8px rgba(19,23,30,0.04)",
+      <ImageClassifier
+        modelPath={modelPath}
+        setModelPath={setModelPath}
+        imageFile={imageFile}
+        onSelectImage={onSelectImage}
+        imagePreview={imagePreview}
+        predicting={predicting}
+        prediction={prediction}
+        onPredict={predictImage}
+        explicitClassNames={EXPLICIT_CLASS_NAMES}
+      />
+      <TabularClassifier
+        featuresText={featuresText}
+        setFeaturesText={setFeaturesText}
+        tabularPredicting={tabularPredicting || running}
+        tabularResult={tabularResult}
+        onLoadSample={loadSampleFeatures}
+        onPredict={predictTabular}
+        explicitTextualNames={EXPLICIT_CLASS_NAMES_TEXTUAL}
+      />
+      <ConfusionMatrix
+        modality={modality}
+        setModality={setModality}
+        epochs={epochs}
+        setEpochs={setEpochs}
+        batchSize={batchSize}
+        setBatchSize={setBatchSize}
+        numImgClasses={numImgClasses}
+        setNumImgClasses={setNumImgClasses}
+        numTabFeatures={numTabFeatures}
+        setNumTabFeatures={setNumTabFeatures}
+        running={running}
+        cmImageUrl={cmImageUrl}
+        onPlot={() => {
+          const payload = {
+            modality,
+            epochs,
+            ...(modality === "tabular"
+              ? { batch_size: batchSize, num_img_classes: numImgClasses }
+              : {}),
+            ...(modality === "image"
+              ? { num_tab_features: numTabFeatures }
+              : {}),
+          };
+          fetchConfusionMatrixImage(payload);
         }}
-      >
-        <h2 style={{ color: "#314570", marginBottom: 10 }}>Classify Image</h2>
-        <div
-          className="grid"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: 18,
-            marginBottom: 12,
-          }}
-        >
-          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontWeight: 500 }}>Model path</span>
-            <input
-              type="text"
-              value={modelPath}
-              onChange={(e) => setModelPath(e.target.value)}
-              placeholder="saved_models/multitask_model_latest.keras"
-              disabled={predicting}
-              style={{
-                padding: "8px",
-                borderRadius: 6,
-                border: "1px solid #dbeafe",
-              }}
-            />
-          </label>
-          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontWeight: 500 }}>Choose image</span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={onSelectImage}
-              disabled={predicting}
-              style={{
-                padding: "8px",
-                borderRadius: 6,
-                border: "1px solid #dbeafe",
-              }}
-            />
-          </label>
-        </div>
-        <div className="actions" style={{ marginTop: 10 }}>
-          <button
-            disabled={predicting || !imageFile || !modelPath}
-            onClick={predictImage}
-            style={{
-              fontWeight: 600,
-              background: "#314570",
-              color: "#fff",
-              border: "none",
-            }}
-          >
-            {predicting ? "Predicting…" : "Predict Image"}
-          </button>
-        </div>
-        {imagePreview && (
-          <div
-            className="preview"
-            style={{
-              marginTop: 12,
-              background: "#fff",
-              borderRadius: 8,
-              padding: 12,
-              boxShadow: "0 1px 4px rgba(19,23,30,0.04)",
-            }}
-          >
-            <h3 style={{ margin: "0 0 8px", color: "#314570" }}>Preview</h3>
-            <img
-              src={imagePreview}
-              alt="preview"
-              style={{
-                maxWidth: "100%",
-                height: "auto",
-                border: "1px solid #dbeafe",
-                borderRadius: 6,
-              }}
-            />
-          </div>
-        )}
-        {prediction && (
-          <div
-            className="results"
-            style={{
-              marginTop: 12,
-              background: "#fff",
-              borderRadius: 8,
-              padding: 12,
-              boxShadow: "0 1px 4px rgba(19,23,30,0.04)",
-            }}
-          >
-            <h3 style={{ margin: "0 0 8px", color: "#314570" }}>Prediction</h3>
-            {(() => {
-              const idx = Number.isInteger(prediction?.predicted_index)
-                ? prediction.predicted_index
-                : null;
-              const rawLabels = Array.isArray(prediction?.labels)
-                ? prediction.labels
-                : [];
-              const generic =
-                rawLabels.length > 0 &&
-                rawLabels.every((l) => /^class_\d+$/.test(l));
-              const sameLen = rawLabels.length === EXPLICIT_CLASS_NAMES.length;
-              const friendlyLabel =
-                idx !== null && generic && sameLen
-                  ? EXPLICIT_CLASS_NAMES[idx] ?? prediction.predicted_label
-                  : prediction.predicted_label ?? "-";
-              return (
-                <>
-                  <div>
-                    <strong>Label:</strong> {friendlyLabel}
-                  </div>
-                  <div>
-                    <strong>Index:</strong> {idx ?? "-"}
-                  </div>
-                </>
-              );
-            })()}
-            {Array.isArray(prediction.probabilities) && (
-              <div style={{ marginTop: 8 }}>
-                <strong>Probabilities:</strong>
-                <ul>
-                  {(() => {
-                    const rawLabels = Array.isArray(prediction.labels)
-                      ? prediction.labels
-                      : prediction.probabilities.map((_, i) => `class_${i}`);
-                    const generic = rawLabels.every((l) =>
-                      /^class_\d+$/.test(l)
-                    );
-                    const sameLen =
-                      rawLabels.length === EXPLICIT_CLASS_NAMES.length;
-                    const labelsToShow =
-                      generic && sameLen ? EXPLICIT_CLASS_NAMES : rawLabels;
-                    return labelsToShow.map((lab, i) => (
-                      <li key={`${lab}-${i}`}>
-                        {lab}:{" "}
-                        {prediction.probabilities[i]?.toFixed?.(4) ??
-                          String(prediction.probabilities[i])}
-                      </li>
-                    ));
-                  })()}
-                </ul>
-                {(() => {
-                  const rawLabels = Array.isArray(prediction?.labels)
-                    ? prediction.labels
-                    : [];
-                  const generic =
-                    rawLabels.length > 0 &&
-                    rawLabels.every((l) => /^class_\d+$/.test(l));
-                  const sameLen =
-                    rawLabels.length === EXPLICIT_CLASS_NAMES.length;
-                  return generic && sameLen ? (
-                    <div
-                      style={{ fontSize: "0.9em", color: "#666", marginTop: 6 }}
-                    >
-                      Using explicit names for generic labels: [
-                      {EXPLICIT_CLASS_NAMES.join(", ")}]
-                    </div>
-                  ) : null;
-                })()}
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-{/* Tabular prediction panel */}
-      <section
-        className="panel"
-        style={{
-          background: "#f5f7fb",
-          borderRadius: 8,
-          padding: "18px 20px",
-          marginBottom: 24,
-          boxShadow: "0 2px 8px rgba(19,23,30,0.04)",
-        }}
-      >
-        <h2 style={{ color: "#314570", marginBottom: 10 }}>Classify Tabular</h2>
-        <div style={{ marginBottom: 8 }}>
-          <div style={{ marginBottom: 6 }}>
-            Enter features (30 numbers) as a JSON array or CSV. You can also
-            load a sample from the backend.
-          </div>
-          <textarea
-            value={featuresText}
-            onChange={(e) => setFeaturesText(e.target.value)}
-            rows={4}
-            style={{
-              width: "100%",
-              padding: 8,
-              borderRadius: 6,
-              border: "1px solid #dbeafe",
-            }}
-          />
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={loadSampleFeatures}
-            disabled={tabularPredicting || running}
-          >
-            Load Sample Features
-          </button>
-          <button
-            onClick={predictTabular}
-            disabled={tabularPredicting || running}
-            style={{
-              background: "#314570",
-              color: "#fff",
-              border: "none",
-              fontWeight: 600,
-            }}
-          >
-            {tabularPredicting ? "Predicting…" : "Predict Tabular"}
-          </button>
-        </div>
-        {tabularResult && (
-          <div
-            style={{
-              marginTop: 12,
-              background: "#fff",
-              borderRadius: 8,
-              padding: 12,
-            }}
-          >
-            <h3 style={{ margin: "0 0 8px", color: "#314570" }}>Result</h3>
-            {(() => {
-              const idx = Number(tabularResult?.predicted_class);
-              const friendly = Number.isInteger(idx) && idx >= 0 && idx < EXPLICIT_CLASS_NAMES_TEXTUAL.length
-                ? EXPLICIT_CLASS_NAMES_TEXTUAL[idx]
-                : String(tabularResult?.predicted_class);
-              return (
-                <>
-                  <div>
-                    <strong>Label:</strong> {friendly}
-                  </div>
-                  <div>
-                    <strong>Index:</strong> {Number.isInteger(idx) ? idx : String(tabularResult?.predicted_class)}
-                  </div>
-                </>
-              );
-            })()}
-            <div>
-              <strong>Probability:</strong>{" "}
-              {typeof tabularResult.predicted_probability === "number"
-                ? tabularResult.predicted_probability.toFixed(4)
-                : String(tabularResult.predicted_probability)}
-            </div>
-          </div>
-        )}
-      </section>
-      <section
-        className="panel"
-        style={{
-          background: "#f5f7fb",
-          borderRadius: 8,
-          padding: "18px 20px",
-          marginBottom: 24,
-          boxShadow: "0 2px 8px rgba(19,23,30,0.04)",
-        }}
-      >
-        <h2 style={{ color: "#314570", marginBottom: 10 }}>Confusion Matrix</h2>
-        <div
-          className="grid"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3,1fr)",
-            gap: 18,
-            marginBottom: 12,
-          }}
-        >
-          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontWeight: 500 }}>Modality</span>
-            <select
-              value={modality}
-              onChange={(e) => setModality(e.target.value)}
-              disabled={running}
-              style={{
-                padding: "8px",
-                borderRadius: 6,
-                border: "1px solid #dbeafe",
-              }}
-            >
-              <option value="tabular">Tabular</option>
-              <option value="image">Image</option>
-            </select>
-          </label>
-          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontWeight: 500 }}>Epochs</span>
-            <input
-              type="number"
-              min="1"
-              value={epochs}
-              onChange={(e) => setEpochs(parseInt(e.target.value || "1", 10))}
-              disabled={running}
-              style={{
-                padding: "8px",
-                borderRadius: 6,
-                border: "1px solid #dbeafe",
-              }}
-            />
-          </label>
-          {modality === "tabular" && (
-            <>
-              <label
-                style={{ display: "flex", flexDirection: "column", gap: 4 }}
-              >
-                <span style={{ fontWeight: 500 }}>Batch size</span>
-                <input
-                  type="number"
-                  min="1"
-                  value={batchSize}
-                  onChange={(e) =>
-                    setBatchSize(parseInt(e.target.value || "1", 10))
-                  }
-                  disabled={running}
-                  style={{
-                    padding: "8px",
-                    borderRadius: 6,
-                    border: "1px solid #dbeafe",
-                  }}
-                />
-              </label>
-              <label
-                style={{ display: "flex", flexDirection: "column", gap: 4 }}
-              >
-                <span style={{ fontWeight: 500 }}>Num image classes</span>
-                <input
-                  type="number"
-                  min="2"
-                  value={numImgClasses}
-                  onChange={(e) =>
-                    setNumImgClasses(parseInt(e.target.value || "2", 10))
-                  }
-                  disabled={running}
-                  style={{
-                    padding: "8px",
-                    borderRadius: 6,
-                    border: "1px solid #dbeafe",
-                  }}
-                />
-              </label>
-            </>
-          )}
-          {modality === "image" && (
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontWeight: 500 }}>Num tabular features</span>
-              <input
-                type="number"
-                min="1"
-                value={numTabFeatures}
-                onChange={(e) =>
-                  setNumTabFeatures(parseInt(e.target.value || "1", 10))
-                }
-                disabled={running}
-                style={{
-                  padding: "8px",
-                  borderRadius: 6,
-                  border: "1px solid #dbeafe",
-                }}
-              />
-            </label>
-          )}
-        </div>
-        <div className="actions" style={{ marginTop: 10 }}>
-          <button
-            disabled={running}
-            onClick={() => {
-              const payload = {
-                modality,
-                epochs,
-                ...(modality === "tabular"
-                  ? { batch_size: batchSize, num_img_classes: numImgClasses }
-                  : {}),
-                ...(modality === "image"
-                  ? { num_tab_features: numTabFeatures }
-                  : {}),
-              };
-              fetchConfusionMatrixImage(payload);
-            }}
-            style={{
-              fontWeight: 600,
-              background: "#314570",
-              color: "#fff",
-              border: "none",
-            }}
-          >
-            Plot Confusion Matrix (PNG)
-          </button>
-        </div>
-        {cmImageUrl && (
-          <div
-            className="preview"
-            style={{
-              marginTop: 12,
-              background: "#fff",
-              borderRadius: 8,
-              padding: 12,
-              boxShadow: "0 1px 4px rgba(19,23,30,0.04)",
-            }}
-          >
-            <h3 style={{ margin: "0 0 8px", color: "#314570" }}>
-              Confusion Matrix Preview
-            </h3>
-            <img
-              src={cmImageUrl}
-              alt="Confusion matrix"
-              style={{
-                maxWidth: "100%",
-                height: "auto",
-                border: "1px solid #dbeafe",
-                borderRadius: 6,
-              }}
-            />
-          </div>
-        )}
-      </section>
+      />
 
-      <section className="log" style={{ marginTop: 32 }}>
-        <div className="log-header">
-          <div className="log-title">
-            <h2 style={{ color: "#314570", margin: 0 }}>Logs</h2>
-            <span className="log-count">{logs.length}</span>
-          </div>
-          <div className="log-actions">
-            <button onClick={clearLogs} disabled={!logs.length}>
-              Clear
-            </button>
-          </div>
-        </div>
-        <div className="log-window">
-          {logs.length === 0 ? (
-            <div className="log-empty">
-              No logs yet. Actions and results will appear here.
-            </div>
-          ) : (
-            logs.map((l) => (
-              <div key={l.id} className={`log-line kind-${l.kind}`}>
-                <span className="log-time">{l.time.toLocaleTimeString()}</span>
-                <span className="log-msg">{l.text}</span>
-              </div>
-            ))
-          )}
-          <div ref={logEndRef} />
-        </div>
-      </section>
+  <Logs logs={logs} onClear={clearLogs} />
 
       
     </div>
