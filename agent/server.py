@@ -344,25 +344,25 @@ async def train_and_evaluate_full_pipeline_route(request):
     return JSONResponse(result, headers=CORS_HEADERS)
 
 
-# Helper to create an actual Keras Model object (used by training wrappers)
-def _create_multitask_model_object(num_img_classes: int, num_tab_features: int):
-    image_input = Input(shape=(256, 256, 3), name='image_input')
-    base_model = DenseNet121(weights='imagenet', include_top=False, input_tensor=image_input)
-    for layer in base_model.layers:
-        layer.trainable = False
-    x_img = GlobalAveragePooling2D()(base_model.output)
-    x_img = Dense(512, activation='relu', name="img_dense1")(x_img)
-    x_img = Dropout(0.5)(x_img)
-    img_output = Dense(num_img_classes, activation='softmax', name='img_output')(x_img)
+# # Helper to create an actual Keras Model object (used by training wrappers)
+# def _create_multitask_model_object(num_img_classes: int, num_tab_features: int):
+#     image_input = Input(shape=(256, 256, 3), name='image_input')
+#     base_model = DenseNet121(weights='imagenet', include_top=False, input_tensor=image_input)
+#     for layer in base_model.layers:
+#         layer.trainable = False
+#     x_img = GlobalAveragePooling2D()(base_model.output)
+#     x_img = Dense(512, activation='relu', name="img_dense1")(x_img)
+#     x_img = Dropout(0.5)(x_img)
+#     img_output = Dense(num_img_classes, activation='softmax', name='img_output')(x_img)
 
-    tab_input = Input(shape=(num_tab_features,), name='tabular_input')
-    x_tab = Dense(64, activation='relu', name="txt_dense1")(tab_input)
-    x_tab = Dropout(0.3)(x_tab)
-    x_tab = Dense(32, activation='relu', name="txt_dense2")(x_tab)
-    txt_output = Dense(1, activation='sigmoid', name='txt_output')(x_tab)
+#     tab_input = Input(shape=(num_tab_features,), name='tabular_input')
+#     x_tab = Dense(64, activation='relu', name="txt_dense1")(tab_input)
+#     x_tab = Dropout(0.3)(x_tab)
+#     x_tab = Dense(32, activation='relu', name="txt_dense2")(x_tab)
+#     txt_output = Dense(1, activation='sigmoid', name='txt_output')(x_tab)
 
-    model = Model(inputs=[image_input, tab_input], outputs=[img_output, txt_output])
-    return model
+#     model = Model(inputs=[image_input, tab_input], outputs=[img_output, txt_output])
+#     return model
 
 
 # HTTP wrapper to train only the text branch using in-process tabular data and a fresh model
@@ -394,277 +394,77 @@ async def train_image_branch_route(request):
         return JSONResponse({"error": str(e)}, status_code=500, headers=CORS_HEADERS)
     return JSONResponse(result, headers=CORS_HEADERS)
 
-
-# ==============================
-# Confusion Matrix Endpoint
-# ==============================
-@mcp.custom_route("/confusion_matrix", methods=["POST"])
-async def confusion_matrix_route(request):
-    """
-    Compute a confusion matrix for either the tabular (text) branch or image branch.
-
-    Body params (JSON):
-      - modality: "tabular" | "image" (default: "tabular")
-      - num_img_classes: int (used when modality=="tabular" to size the unused image head, default 2)
-      - num_tab_features: int (used when modality=="image" to size dummy tabular input, default 30)
-      - epochs: int (optional override, small default per branch)
-      - batch_size: int (optional override for tabular training)
-    """
-    try:
-        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-    except Exception:
-        body = {}
-
-    modality = (body.get("modality") or body.get("branch") or "tabular").lower()
-
-    # TABULAR (text) branch confusion matrix
-    if modality == "tabular":
-        try:
-            num_img_classes = int(body.get("num_img_classes", 2))
-            epochs = int(body.get("epochs", 5))
-            batch_size = int(body.get("batch_size", 8))
-
-            # Load tabular data
-            tab = _load_tabular_data_impl()
-            X_train = np.array(tab["X_train"], dtype=np.float32)
-            Y_train = np.array(tab["Y_train"], dtype=np.float32).reshape(-1, 1)
-            X_val = np.array(tab["X_val"], dtype=np.float32)
-            Y_val = np.array(tab["Y_val"], dtype=np.float32).reshape(-1, 1)
-
-            # Build model and train only text branch
-            model = _build_multitask_model_impl(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
-            #model = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
-            for layer in model.layers:
-                layer.trainable = "txt_" in layer.name or layer.name == "txt_output"
-            model.compile(
-                optimizer="adam",
-                loss={"img_output": "binary_crossentropy", "txt_output": "binary_crossentropy"},
-                loss_weights={"img_output": 0.0, "txt_output": 1.0},
-                metrics={"txt_output": "accuracy"},
-            )
-            model.fit(
-                {"tabular_input": X_train, "image_input": np.zeros((len(X_train), 256, 256, 3))},
-                {"txt_output": Y_train, "img_output": np.zeros((len(X_train), num_img_classes))},
-                validation_data=(
-                    {"tabular_input": X_val, "image_input": np.zeros((len(X_val), 256, 256, 3))},
-                    {"txt_output": Y_val, "img_output": np.zeros((len(X_val), num_img_classes))},
-                ),
-                epochs=epochs,
-                batch_size=batch_size,
-                verbose=0,
-            )
-
-            y_pred_prob = model.predict({"tabular_input": X_val, "image_input": np.zeros((len(X_val), 256, 256, 3))})[1]
-            y_pred = (y_pred_prob > 0.5).astype(int).reshape(-1)
-            y_true = Y_val.reshape(-1).astype(int)
-
-            cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-            report = classification_report(y_true, y_pred, target_names=["class_0", "class_1"], zero_division=0)
-
-            return JSONResponse(
-                {
-                    "modality": "tabular",
-                    "labels": ["class_0", "class_1"],
-                    "confusion_matrix": cm.tolist(),
-                    "report": report,
-                },
-                headers=CORS_HEADERS,
-            )
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500, headers=CORS_HEADERS)
-
-    # IMAGE branch confusion matrix
-    elif modality == "image":
-        try:
-            num_tab_features = int(body.get("num_tab_features", 30))
-            epochs = int(body.get("epochs", 10))
-
-            img = _load_image_data_impl()
-            num_classes = img["num_classes"]
-            class_indices = img["class_indices"]  # name -> index
-            # index -> name in correct order
-            names_by_index = [name for name, _idx in sorted(class_indices.items(), key=lambda kv: kv[1])]
-            model = _build_multitask_model_impl(num_img_classes=num_classes, num_tab_features=num_tab_features)
-
-            #model = _create_multitask_model_object(num_img_classes=num_classes, num_tab_features=num_tab_features)
-            for layer in model.layers:
-                layer.trainable = "img_" in layer.name or layer.name == "img_output"
-            model.compile(
-                optimizer="adam",
-                loss={"img_output": "categorical_crossentropy", "txt_output": "binary_crossentropy"},
-                loss_weights={"img_output": 1.0, "txt_output": 0.0},
-                metrics={"img_output": "accuracy"},
-            )
-
-            def generator_with_dummy_tab(img_gen):
-                while True:
-                    X_img, Y_img = next(img_gen)
-                    yield {
-                        "image_input": X_img,
-                        "tabular_input": np.zeros((X_img.shape[0], num_tab_features)),
-                    }, {
-                        "img_output": Y_img,
-                        "txt_output": np.zeros((X_img.shape[0], 1)),
-                    }
-
-            model.fit(
-                generator_with_dummy_tab(img["train_img_gen"]),
-                validation_data=generator_with_dummy_tab(img["val_img_gen"]),
-                steps_per_epoch=len(img["train_img_gen"]),
-                validation_steps=len(img["val_img_gen"]),
-                epochs=epochs,
-                verbose=0,
-            )
-
-            # Collect full validation set
-            X_imgs, Y_imgs = [], []
-            for batch in img["val_img_gen"]:
-                X_imgs.append(batch[0])
-                Y_imgs.append(batch[1])
-                if len(X_imgs) * img["val_img_gen"].batch_size >= img["val_img_gen"].n:
-                    break
-            X_imgs = np.concatenate(X_imgs)
-            Y_imgs = np.concatenate(Y_imgs)
-
-            y_pred_logits = model.predict({
-                "image_input": X_imgs,
-                "tabular_input": np.zeros((len(X_imgs), num_tab_features)),
-            })[0]
-            y_pred = np.argmax(y_pred_logits, axis=1)
-            y_true = np.argmax(Y_imgs, axis=1)
-
-            cm = confusion_matrix(y_true, y_pred, labels=list(range(num_classes)))
-            report = classification_report(y_true, y_pred, target_names=names_by_index, zero_division=0)
-
-            return JSONResponse(
-                {
-                    "modality": "image",
-                    "labels": names_by_index,
-                    "confusion_matrix": cm.tolist(),
-                    "report": report,
-                },
-                headers=CORS_HEADERS,
-            )
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500, headers=CORS_HEADERS)
-    else:
-        return JSONResponse({"error": f"Unsupported modality: {modality}"}, status_code=400, headers=CORS_HEADERS)
-
-
 # ==============================
 # Confusion Matrix Plot (PNG)
 # ==============================
 @mcp.custom_route("/confusion_matrix_image", methods=["POST"])
+
 async def confusion_matrix_image_route(request):
-    """Return a PNG image rendering of the confusion matrix for the chosen modality."""
+    """Return a PNG image rendering of the confusion matrix for the chosen modality, using a saved model if available."""
     try:
         body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     except Exception:
         body = {}
 
     modality = (body.get("modality") or body.get("branch") or "tabular").lower()
+    model_path = body.get("model_path") or os.getenv("MODEL_PATH")
+    if not model_path:
+        # Try default location
+        model_path = os.path.join(os.getcwd(), "saved_models", "multitask_model_latest.keras")
+    if not os.path.exists(model_path):
+        return JSONResponse({"error": f"No saved model found at '{model_path}'"}, status_code=404, headers=CORS_HEADERS)
 
-    # Compute confusion matrix and labels using the same logic as the JSON endpoint
     try:
-        if modality == "tabular":
-            num_img_classes = int(body.get("num_img_classes", 2))
-            epochs = int(body.get("epochs", 5))
-            batch_size = int(body.get("batch_size", 8))
-
-            tab = _load_tabular_data_impl()
-            X_train = np.array(tab["X_train"], dtype=np.float32)
-            Y_train = np.array(tab["Y_train"], dtype=np.float32).reshape(-1, 1)
-            X_val = np.array(tab["X_val"], dtype=np.float32)
-            Y_val = np.array(tab["Y_val"], dtype=np.float32).reshape(-1, 1)
-            model = _build_multitask_model_impl(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
-
-            #model = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
-            for layer in model.layers:
-                layer.trainable = "txt_" in layer.name or layer.name == "txt_output"
-            model.compile(
-                optimizer="adam",
-                loss={"img_output": "binary_crossentropy", "txt_output": "binary_crossentropy"},
-                loss_weights={"img_output": 0.0, "txt_output": 1.0},
-                metrics={"txt_output": "accuracy"},
-            )
-            model.fit(
-                {"tabular_input": X_train, "image_input": np.zeros((len(X_train), 256, 256, 3))},
-                {"txt_output": Y_train, "img_output": np.zeros((len(X_train), num_img_classes))},
-                validation_data=(
-                    {"tabular_input": X_val, "image_input": np.zeros((len(X_val), 256, 256, 3))},
-                    {"txt_output": Y_val, "img_output": np.zeros((len(X_val), num_img_classes))},
-                ),
-                epochs=epochs,
-                batch_size=batch_size,
-                verbose=0,
-            )
-            y_pred_prob = model.predict({"tabular_input": X_val, "image_input": np.zeros((len(X_val), 256, 256, 3))})[1]
-            y_pred = (y_pred_prob > 0.5).astype(int).reshape(-1)
-            y_true = Y_val.reshape(-1).astype(int)
-            labels = ["class_0", "class_1"]
-            cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-
-        elif modality == "image":
-            num_tab_features = int(body.get("num_tab_features", 30))
-            epochs = int(body.get("epochs", 10))
-
-            img = _load_image_data_impl()
-            num_classes = img["num_classes"]
-            class_indices = img["class_indices"]
-            labels = [name for name, _idx in sorted(class_indices.items(), key=lambda kv: kv[1])]
-            model = _build_multitask_model_impl(num_img_classes=num_img_classes, num_tab_features=num_tab_features)
-
-            #model = _create_multitask_model_object(num_img_classes=num_classes, num_tab_features=num_tab_features)
-            for layer in model.layers:
-                layer.trainable = "img_" in layer.name or layer.name == "img_output"
-            model.compile(
-                optimizer="adam",
-                loss={"img_output": "categorical_crossentropy", "txt_output": "binary_crossentropy"},
-                loss_weights={"img_output": 1.0, "txt_output": 0.0},
-                metrics={"img_output": "accuracy"},
-            )
-
-            def generator_with_dummy_tab(img_gen):
-                while True:
-                    X_img, Y_img = next(img_gen)
-                    yield {
-                        "image_input": X_img,
-                        "tabular_input": np.zeros((X_img.shape[0], num_tab_features)),
-                    }, {
-                        "img_output": Y_img,
-                        "txt_output": np.zeros((X_img.shape[0], 1)),
-                    }
-
-            model.fit(
-                generator_with_dummy_tab(img["train_img_gen"]),
-                validation_data=generator_with_dummy_tab(img["val_img_gen"]),
-                steps_per_epoch=len(img["train_img_gen"]),
-                validation_steps=len(img["val_img_gen"]),
-                epochs=epochs,
-                verbose=0,
-            )
-
-            # Collect validation set
-            X_imgs, Y_imgs = [], []
-            for batch in img["val_img_gen"]:
-                X_imgs.append(batch[0])
-                Y_imgs.append(batch[1])
-                if len(X_imgs) * img["val_img_gen"].batch_size >= img["val_img_gen"].n:
-                    break
-            X_imgs = np.concatenate(X_imgs)
-            Y_imgs = np.concatenate(Y_imgs)
-
-            y_pred_logits = model.predict({
-                "image_input": X_imgs,
-                "tabular_input": np.zeros((len(X_imgs), num_tab_features)),
-            })[0]
-            y_pred = np.argmax(y_pred_logits, axis=1)
-            y_true = np.argmax(Y_imgs, axis=1)
-            cm = confusion_matrix(y_true, y_pred, labels=list(range(len(labels))))
-        else:
-            return JSONResponse({"error": f"Unsupported modality: {modality}"}, status_code=400, headers=CORS_HEADERS)
+        model = _get_or_load_model(model_path)
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500, headers=CORS_HEADERS)
+        return JSONResponse({"error": f"Failed to load model: {e}"}, status_code=500, headers=CORS_HEADERS)
+
+    if modality == "tabular":
+        tab = _load_tabular_data_impl()
+        X_val = np.array(tab["X_val"], dtype=np.float32)
+        Y_val = np.array(tab["Y_val"], dtype=np.float32).reshape(-1, 1)
+        # Find tabular input name
+        input_names = [getattr(t, "name", "").split(":")[0] for t in model.inputs]
+        feed = {}
+        for name in input_names:
+            if "tabular" in name:
+                feed[name] = X_val
+            elif "image" in name:
+                feed[name] = np.zeros((len(X_val), 256, 256, 3))
+        y_pred_prob = model.predict(feed)[1]
+        y_pred = (y_pred_prob > 0.5).astype(int).reshape(-1)
+        y_true = Y_val.reshape(-1).astype(int)
+        labels = ["class_0", "class_1"]
+        cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    elif modality == "image":
+        img = _load_image_data_impl()
+        val_img_gen = img["val_img_gen"]
+        num_tab_features = img["train_img_gen"].image_shape[0] if hasattr(img["train_img_gen"], "image_shape") else 30
+        class_indices = img["class_indices"]
+        labels = [name for name, _idx in sorted(class_indices.items(), key=lambda kv: kv[1])]
+        # Collect validation set
+        X_imgs, Y_imgs = [], []
+        for batch in val_img_gen:
+            X_imgs.append(batch[0])
+            Y_imgs.append(batch[1])
+            if len(X_imgs) * val_img_gen.batch_size >= val_img_gen.n:
+                break
+        X_imgs = np.concatenate(X_imgs)
+        Y_imgs = np.concatenate(Y_imgs)
+        # Find input names
+        input_names = [getattr(t, "name", "").split(":")[0] for t in model.inputs]
+        feed = {}
+        for name in input_names:
+            if "image" in name:
+                feed[name] = X_imgs
+            elif "tabular" in name:
+                feed[name] = np.zeros((len(X_imgs), 30))
+        y_pred_logits = model.predict(feed)[0]
+        y_pred = np.argmax(y_pred_logits, axis=1)
+        y_true = np.argmax(Y_imgs, axis=1)
+        cm = confusion_matrix(y_true, y_pred, labels=list(range(len(labels))))
+    else:
+        return JSONResponse({"error": f"Unsupported modality: {modality}"}, status_code=400, headers=CORS_HEADERS)
 
     # Plot confusion matrix
     fig, ax = plt.subplots(figsize=(6, 5), dpi=150)
@@ -674,10 +474,7 @@ async def confusion_matrix_image_route(request):
            xticklabels=labels, yticklabels=labels,
            ylabel='True label', xlabel='Predicted label', title=f'Confusion Matrix ({modality})')
 
-    # Rotate tick labels and set alignment.
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-
-    # Annotate cells
     thresh = cm.max() / 2.0 if cm.size else 0
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):

@@ -286,20 +286,7 @@ function App(){
           )}
         </div>
         <div className="actions">
-          <button
-            disabled={running}
-            onClick={()=>{
-              const payload = {
-                modality,
-                epochs,
-                ...(modality === 'tabular' ? { batch_size: batchSize, num_img_classes: numImgClasses } : {}),
-                ...(modality === 'image' ? { num_tab_features: numTabFeatures } : {}),
-              };
-              callTool('/confusion_matrix', payload);
-            }}
-          >
-            Get Confusion Matrix
-          </button>
+          
           <button
             disabled={running}
             onClick={()=>{
