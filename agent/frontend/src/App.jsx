@@ -301,18 +301,6 @@ function App(){
           >
             Plot Confusion Matrix (PNG)
           </button>
-          <button
-            disabled={running}
-            onClick={()=>callTool('/confusion_matrix', { modality: 'tabular', epochs: 3, batch_size: 8, num_img_classes: 2 })}
-          >
-            Quick: Tabular
-          </button>
-          <button
-            disabled={running}
-            onClick={()=>callTool('/confusion_matrix', { modality: 'image', epochs: 2, num_tab_features: 30 })}
-          >
-            Quick: Image
-          </button>
         </div>
         {cmImageUrl && (
           <div className="preview">
