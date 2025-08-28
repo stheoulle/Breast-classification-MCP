@@ -18,7 +18,15 @@ agent/
   frontend/                # Vite + React frontend
     index.html
     package.json
-    src/App.jsx
+    src/
+      components/
+        ConfusionMatrix.jsx
+        Header.jsx
+        ImageClassifier.jsx
+        TabularClassifier.jsx
+        Logs.jsx
+        Toolbar.jsx
+      App.jsx
   test_images/             # Sample images for quick tests
   saved_models/            # Will be created at runtime (saved model + labels)
   README.md                # This file
@@ -154,6 +162,7 @@ Open the printed dev URL (typically `http://localhost:5173`). The app assumes th
 - POST `/confusion_matrix`: computes CM for requested modality.
 - POST `/confusion_matrix_image`: returns PNG CM for requested modality.
 - POST `/predict_image`: classify uploaded image using saved model.
+- POST `/predict_tabular`: classify provided tabular data using saved model.
 
 All responses include CORS headers for `http://localhost:5173`.
 
