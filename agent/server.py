@@ -489,6 +489,10 @@ async def confusion_matrix_image_route(request):
 
     headers = {**CORS_HEADERS, "Content-Type": "image/png"}
     return Response(content=buf.getvalue(), media_type="image/png", headers=headers)
+# Note: training-specific endpoints like train_text_branch and train_image_branch expect complex
+# Python objects (models/generators). They are not wrapped here. If you need them over HTTP we
+# should design a serialized protocol or a job system. For now the frontend can use the
+# above wrapper endpoints for basic interactions.
 
 
 # Note: training-specific endpoints like train_text_branch and train_image_branch expect complex
@@ -720,3 +724,122 @@ async def predict_image_route(request):
 
 if __name__ == "__main__":
     mcp.run(transport="http")  # exposes /health and all @mcp.tool automatically
+    
+
+# ==============================
+# Tabular Prediction Endpoint (no training)
+# ==============================
+
+@mcp.custom_route("/predict_tabular", methods=["POST"])
+async def predict_tabular_route(request):
+    """Predict the class of tabular data using a pre-trained model on disk.
+
+    Accepts JSON with fields:
+      - features: list of floats (required, length 30)
+      - model_path: string path to a saved model (optional if MODEL_PATH env is set)
+    Returns JSON with predicted value, probability, and model info.
+    """
+    content_type = request.headers.get("content-type", "")
+    body_json = None
+    if content_type.startswith("application/json"):
+        try:
+            body_json = await request.json()
+        except Exception:
+            body_json = {}
+    else:
+        return JSONResponse({"error": "Content-Type must be application/json"}, status_code=400, headers=CORS_HEADERS)
+
+    # Resolve model path
+    model_path = (body_json.get("model_path") or os.getenv("MODEL_PATH") or "").strip() or None
+    if not model_path:
+        model_path = os.path.join(os.getcwd(), "saved_models", "multitask_model_latest.keras")
+    if not os.path.exists(model_path):
+        return JSONResponse({"error": f"Model not found at '{model_path}'"}, status_code=400, headers=CORS_HEADERS)
+
+    # Get features
+    features = body_json.get("features")
+    if not isinstance(features, (list, tuple)) or len(features) != 30:
+        return JSONResponse({"error": "features must be a list of 30 floats (sklearn breast cancer dataset)"}, status_code=400, headers=CORS_HEADERS)
+
+    # Preprocess features
+    try:
+        X = np.array(features, dtype=np.float32).reshape(1, -1)
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to process features: {e}"}, status_code=400, headers=CORS_HEADERS)
+
+    # Load model
+    try:
+        model = _get_or_load_model(model_path)
+    except RuntimeError as e:
+        return JSONResponse({"error": str(e)}, status_code=500, headers=CORS_HEADERS)
+
+    # Build inputs mapping (support single or multi-input models)
+    feed = None
+    try:
+        model_inputs = model.inputs
+        input_names = [getattr(t, "name", "").split(":")[0] for t in model_inputs]
+        if len(model_inputs) == 1:
+            feed = X
+        else:
+            feed = {}
+            placed = False
+            for name in input_names:
+                if "tabular" in name:
+                    feed[name] = X
+                    placed = True
+            # find image input shape (None, H, W, C)
+            for i, t in enumerate(model_inputs):
+                name = input_names[i]
+                if name not in feed:
+                    shape = t.shape
+                    # shape like (None, H, W, C)
+                    if len(shape) == 4:
+                        feed[name] = np.zeros((1, 256, 256, 3), dtype=np.float32)
+            if not placed:
+                # if we didn't find by name, assume first is tabular
+                first_name = input_names[0]
+                feed[first_name] = X
+    except Exception:
+        # Fallback: try positional 2-input assumption
+        try:
+            feed = [np.zeros((1, 256, 256, 3), dtype=np.float32), X] if len(model.inputs) > 1 else X
+        except Exception:
+            feed = X
+
+    # Predict
+    try:
+        pred = model.predict(feed)
+    except Exception as e:
+        return JSONResponse({"error": f"Model prediction failed: {e}"}, status_code=500, headers=CORS_HEADERS)
+
+    # Resolve tabular head output and probability
+    prob = None
+    try:
+        if isinstance(pred, (list, tuple)):
+            # pick txt head by name when possible
+            try:
+                out_names = [getattr(t, "name", "").split(":")[0] for t in model.outputs]
+                if "txt_output" in out_names:
+                    prob = pred[out_names.index("txt_output")]
+                else:
+                    prob = pred[1] if len(pred) > 1 else pred[0]
+            except Exception:
+                prob = pred[1] if len(pred) > 1 else pred[0]
+        else:
+            prob = pred
+        prob = float(np.asarray(prob).reshape(-1)[0])
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to interpret model outputs: {e}"}, status_code=500, headers=CORS_HEADERS)
+
+    # Binary prediction
+    pred_class = int(prob > 0.5)
+
+    return JSONResponse(
+        {
+            "model_path": model_path,
+            "predicted_class": pred_class,
+            "predicted_probability": prob,
+            "features": features,
+        },
+        headers=CORS_HEADERS,
+    )

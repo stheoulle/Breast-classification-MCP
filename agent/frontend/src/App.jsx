@@ -17,6 +17,11 @@ function App() {
   const [imagePreview, setImagePreview] = useState(null);
   const [predicting, setPredicting] = useState(false);
   const [prediction, setPrediction] = useState(null);
+  // Tabular classification controls
+  // features can be provided as JSON array or comma-separated values
+  const [featuresText, setFeaturesText] = useState("[]");
+  const [tabularPredicting, setTabularPredicting] = useState(false);
+  const [tabularResult, setTabularResult] = useState(null);
   // Confusion matrix controls
   const [modality, setModality] = useState("tabular"); // 'tabular' | 'image'
   const [epochs, setEpochs] = useState(5);
@@ -155,6 +160,83 @@ function App() {
       pushLog(String(e), "error");
     }
     setPredicting(false);
+  }
+
+  // Load a sample feature vector from backend (/load_tabular_data) and populate featuresText
+  async function loadSampleFeatures() {
+    pushLog("Loading sample features from /load_tabular_data...", "info");
+    try {
+      const res = await fetch(`${API_BASE}/load_tabular_data`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        pushLog(`Error ${res.status}: ${JSON.stringify(data)}`, "error");
+        return;
+      }
+      // prefer a validation sample if present
+      const sample =
+        (data.X_val && data.X_val[0]) || (data.X_train && data.X_train[0]);
+      if (sample) {
+        setFeaturesText(JSON.stringify(sample));
+        pushLog("Sample features loaded.", "success");
+      } else {
+        pushLog("No sample features found in response.", "error");
+      }
+    } catch (e) {
+      pushLog(String(e), "error");
+    }
+  }
+
+  // Call backend /predict_tabular with a JSON array of 30 features
+  async function predictTabular() {
+    let features;
+    try {
+      // accept JSON array or comma-separated values
+      if (featuresText.trim().startsWith("[")) {
+        features = JSON.parse(featuresText);
+      } else {
+        features = featuresText
+          .split(/[,\n\s]+/)
+          .map((s) => (s === "" ? null : Number(s)))
+          .filter((v) => v !== null && !Number.isNaN(v));
+      }
+    } catch (e) {
+      pushLog("Failed to parse features: provide JSON array or CSV", "error");
+      return;
+    }
+
+    if (!Array.isArray(features) || features.length !== 30) {
+      pushLog(
+        "features must be an array of 30 numbers (sklearn breast cancer)",
+        "error"
+      );
+      return;
+    }
+
+    setTabularPredicting(true);
+    setTabularResult(null);
+    pushLog("Calling /predict_tabular...", "info");
+    try {
+      const payload = { features };
+      const res = await fetch(`${API_BASE}/predict_tabular`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        pushLog(`Error ${res.status}: ${JSON.stringify(data)}`, "error");
+      } else {
+        setTabularResult(data);
+        pushLog(JSON.stringify(data, null, 2), "success");
+      }
+    } catch (e) {
+      pushLog(String(e), "error");
+    }
+    setTabularPredicting(false);
   }
 
   function onSelectImage(e) {
@@ -437,7 +519,78 @@ function App() {
           </div>
         )}
       </section>
-
+{/* Tabular prediction panel */}
+      <section
+        className="panel"
+        style={{
+          background: "#f5f7fb",
+          borderRadius: 8,
+          padding: "18px 20px",
+          marginBottom: 24,
+          boxShadow: "0 2px 8px rgba(19,23,30,0.04)",
+        }}
+      >
+        <h2 style={{ color: "#314570", marginBottom: 10 }}>Classify Tabular</h2>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ marginBottom: 6 }}>
+            Enter features (30 numbers) as a JSON array or CSV. You can also
+            load a sample from the backend.
+          </div>
+          <textarea
+            value={featuresText}
+            onChange={(e) => setFeaturesText(e.target.value)}
+            rows={4}
+            style={{
+              width: "100%",
+              padding: 8,
+              borderRadius: 6,
+              border: "1px solid #dbeafe",
+            }}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={loadSampleFeatures}
+            disabled={tabularPredicting || running}
+          >
+            Load Sample Features
+          </button>
+          <button
+            onClick={predictTabular}
+            disabled={tabularPredicting || running}
+            style={{
+              background: "#314570",
+              color: "#fff",
+              border: "none",
+              fontWeight: 600,
+            }}
+          >
+            {tabularPredicting ? "Predicting…" : "Predict Tabular"}
+          </button>
+        </div>
+        {tabularResult && (
+          <div
+            style={{
+              marginTop: 12,
+              background: "#fff",
+              borderRadius: 8,
+              padding: 12,
+            }}
+          >
+            <h3 style={{ margin: "0 0 8px", color: "#314570" }}>Result</h3>
+            <div>
+              <strong>Predicted class:</strong>{" "}
+              {String(tabularResult.predicted_class)}
+            </div>
+            <div>
+              <strong>Probability:</strong>{" "}
+              {typeof tabularResult.predicted_probability === "number"
+                ? tabularResult.predicted_probability.toFixed(4)
+                : String(tabularResult.predicted_probability)}
+            </div>
+          </div>
+        )}
+      </section>
       <section
         className="panel"
         style={{
@@ -633,6 +786,8 @@ function App() {
           <div ref={logEndRef} />
         </div>
       </section>
+
+      
     </div>
   );
 }
