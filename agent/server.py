@@ -345,24 +345,24 @@ async def train_and_evaluate_full_pipeline_route(request):
 
 
 # # Helper to create an actual Keras Model object (used by training wrappers)
-# def _create_multitask_model_object(num_img_classes: int, num_tab_features: int):
-#     image_input = Input(shape=(256, 256, 3), name='image_input')
-#     base_model = DenseNet121(weights='imagenet', include_top=False, input_tensor=image_input)
-#     for layer in base_model.layers:
-#         layer.trainable = False
-#     x_img = GlobalAveragePooling2D()(base_model.output)
-#     x_img = Dense(512, activation='relu', name="img_dense1")(x_img)
-#     x_img = Dropout(0.5)(x_img)
-#     img_output = Dense(num_img_classes, activation='softmax', name='img_output')(x_img)
+def _create_multitask_model_object(num_img_classes: int, num_tab_features: int):
+    image_input = Input(shape=(256, 256, 3), name='image_input')
+    base_model = DenseNet121(weights='imagenet', include_top=False, input_tensor=image_input)
+    for layer in base_model.layers:
+        layer.trainable = False
+    x_img = GlobalAveragePooling2D()(base_model.output)
+    x_img = Dense(512, activation='relu', name="img_dense1")(x_img)
+    x_img = Dropout(0.5)(x_img)
+    img_output = Dense(num_img_classes, activation='softmax', name='img_output')(x_img)
 
-#     tab_input = Input(shape=(num_tab_features,), name='tabular_input')
-#     x_tab = Dense(64, activation='relu', name="txt_dense1")(tab_input)
-#     x_tab = Dropout(0.3)(x_tab)
-#     x_tab = Dense(32, activation='relu', name="txt_dense2")(x_tab)
-#     txt_output = Dense(1, activation='sigmoid', name='txt_output')(x_tab)
+    tab_input = Input(shape=(num_tab_features,), name='tabular_input')
+    x_tab = Dense(64, activation='relu', name="txt_dense1")(tab_input)
+    x_tab = Dropout(0.3)(x_tab)
+    x_tab = Dense(32, activation='relu', name="txt_dense2")(x_tab)
+    txt_output = Dense(1, activation='sigmoid', name='txt_output')(x_tab)
 
-#     model = Model(inputs=[image_input, tab_input], outputs=[img_output, txt_output])
-#     return model
+    model = Model(inputs=[image_input, tab_input], outputs=[img_output, txt_output])
+    return model
 
 
 # HTTP wrapper to train only the text branch using in-process tabular data and a fresh model
@@ -371,8 +371,8 @@ async def train_text_branch_route(request):
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     num_img_classes = int(body.get("num_img_classes", 2))
     tab = _load_tabular_data_impl()
-    model_obj = _build_multitask_model_impl(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
-    #model_obj = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])    
+    #model_obj = _build_multitask_model_impl(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
+    model_obj = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])    
     try:
         result = _train_text_branch_impl(model_obj, tab["X_train"], tab["Y_train"], tab["X_val"], tab["Y_val"], num_img_classes)
     except Exception as e:
@@ -386,8 +386,8 @@ async def train_image_branch_route(request):
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     num_tab_features = int(body.get("num_tab_features", 30))
     img = _load_image_data_impl()
-    model_obj = _build_multitask_model_impl(num_img_classes=img["num_classes"], num_tab_features=num_tab_features)
-    #model_obj = _create_multitask_model_object(num_img_classes=img["num_classes"], num_tab_features=num_tab_features)
+    #model_obj = _build_multitask_model_impl(num_img_classes=img["num_classes"], num_tab_features=num_tab_features)
+    model_obj = _create_multitask_model_object(num_img_classes=img["num_classes"], num_tab_features=num_tab_features)
     try:
         result = _train_image_branch_impl(model_obj, img["train_img_gen"], img["val_img_gen"], num_tab_features)
     except Exception as e:
