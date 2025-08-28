@@ -4,6 +4,7 @@ const API_BASE = window.__MCP_API_BASE__ || "http://localhost:8000";
 // If backend labels are generic (class_0, class_1, class_2), show these explicit names instead.
 // Order: benign (0), malignant (1), normal (2)
 const EXPLICIT_CLASS_NAMES = ["benign", "malignant", "normal"]; // index 0,1,2
+const EXPLICIT_CLASS_NAMES_TEXTUAL = ["Benign", "Malignant"]; // index 0,1
 
 function App() {
   const [health, setHealth] = useState(null);
@@ -578,10 +579,22 @@ function App() {
             }}
           >
             <h3 style={{ margin: "0 0 8px", color: "#314570" }}>Result</h3>
-            <div>
-              <strong>Predicted class:</strong>{" "}
-              {String(tabularResult.predicted_class)}
-            </div>
+            {(() => {
+              const idx = Number(tabularResult?.predicted_class);
+              const friendly = Number.isInteger(idx) && idx >= 0 && idx < EXPLICIT_CLASS_NAMES_TEXTUAL.length
+                ? EXPLICIT_CLASS_NAMES_TEXTUAL[idx]
+                : String(tabularResult?.predicted_class);
+              return (
+                <>
+                  <div>
+                    <strong>Label:</strong> {friendly}
+                  </div>
+                  <div>
+                    <strong>Index:</strong> {Number.isInteger(idx) ? idx : String(tabularResult?.predicted_class)}
+                  </div>
+                </>
+              );
+            })()}
             <div>
               <strong>Probability:</strong>{" "}
               {typeof tabularResult.predicted_probability === "number"

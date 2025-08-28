@@ -224,12 +224,10 @@ def _train_and_evaluate_full_pipeline_impl():
     tab_data = _load_tabular_data_impl()
 
     # Build a real Keras model object for training (the _build_* impl returns metadata only)
-    model = _build_multitask_model_impl()
-    _build_multitask_model_impl(num_img_classes=img_data["num_classes"], num_tab_features=tab_data["num_features"])
-    # model = _create_multitask_model_object(
-    #     num_img_classes=img_data["num_classes"],
-    #     num_tab_features=tab_data["num_features"],
-    # )
+    model = _create_multitask_model_object(
+        num_img_classes=img_data["num_classes"],
+        num_tab_features=tab_data["num_features"],
+    )
 
     # Train text and image branches using the in-process implementations
     txt_result = _train_text_branch_impl(
@@ -722,10 +720,6 @@ async def predict_image_route(request):
         headers=CORS_HEADERS,
     )
 
-if __name__ == "__main__":
-    mcp.run(transport="http")  # exposes /health and all @mcp.tool automatically
-    
-
 # ==============================
 # Tabular Prediction Endpoint (no training)
 # ==============================
@@ -816,10 +810,12 @@ async def predict_tabular_route(request):
     prob = None
     try:
         if isinstance(pred, (list, tuple)):
+            if len(pred) == 0:
+                return JSONResponse({"error": "Model returned no outputs"}, status_code=500, headers=CORS_HEADERS)
             # pick txt head by name when possible
             try:
                 out_names = [getattr(t, "name", "").split(":")[0] for t in model.outputs]
-                if "txt_output" in out_names:
+                if "txt_output" in out_names and out_names.index("txt_output") < len(pred):
                     prob = pred[out_names.index("txt_output")]
                 else:
                     prob = pred[1] if len(pred) > 1 else pred[0]
@@ -827,7 +823,10 @@ async def predict_tabular_route(request):
                 prob = pred[1] if len(pred) > 1 else pred[0]
         else:
             prob = pred
-        prob = float(np.asarray(prob).reshape(-1)[0])
+        arr = np.asarray(prob).reshape(-1)
+        if arr.size == 0:
+            return JSONResponse({"error": "Empty output from model"}, status_code=500, headers=CORS_HEADERS)
+        prob = float(arr[0])
     except Exception as e:
         return JSONResponse({"error": f"Failed to interpret model outputs: {e}"}, status_code=500, headers=CORS_HEADERS)
 
@@ -843,3 +842,7 @@ async def predict_tabular_route(request):
         },
         headers=CORS_HEADERS,
     )
+
+if __name__ == "__main__":
+    # Run after all routes are registered so POST /predict_tabular and others are available
+    mcp.run(transport="http")  # exposes /health and all @mcp.tool automatically
