@@ -58,8 +58,6 @@ async def cors_preflight(request, path: str = ""):
 # ==============================
 # Data Preparation
 # ==============================
-# Move implementation into plain functions and keep @mcp.tool wrappers thin so other code
-# (HTTP wrappers) can call the implementations directly.
 
 def _load_image_data_impl(train_data="Dataset_BUSI_with_GT", image_size=(256, 256), batch_size=16):
     train_files = [i for i in glob.glob(train_data + "/*/*")]
@@ -226,10 +224,12 @@ def _train_and_evaluate_full_pipeline_impl():
     tab_data = _load_tabular_data_impl()
 
     # Build a real Keras model object for training (the _build_* impl returns metadata only)
-    model = _create_multitask_model_object(
-        num_img_classes=img_data["num_classes"],
-        num_tab_features=tab_data["num_features"],
-    )
+    model = _build_multitask_model_impl()
+    _build_multitask_model_impl(num_img_classes=img_data["num_classes"], num_tab_features=tab_data["num_features"])
+    # model = _create_multitask_model_object(
+    #     num_img_classes=img_data["num_classes"],
+    #     num_tab_features=tab_data["num_features"],
+    # )
 
     # Train text and image branches using the in-process implementations
     txt_result = _train_text_branch_impl(
@@ -371,7 +371,8 @@ async def train_text_branch_route(request):
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     num_img_classes = int(body.get("num_img_classes", 2))
     tab = _load_tabular_data_impl()
-    model_obj = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])    
+    model_obj = _build_multitask_model_impl(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
+    #model_obj = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])    
     try:
         result = _train_text_branch_impl(model_obj, tab["X_train"], tab["Y_train"], tab["X_val"], tab["Y_val"], num_img_classes)
     except Exception as e:
@@ -385,7 +386,8 @@ async def train_image_branch_route(request):
     body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
     num_tab_features = int(body.get("num_tab_features", 30))
     img = _load_image_data_impl()
-    model_obj = _create_multitask_model_object(num_img_classes=img["num_classes"], num_tab_features=num_tab_features)
+    model_obj = _build_multitask_model_impl(num_img_classes=img["num_classes"], num_tab_features=num_tab_features)
+    #model_obj = _create_multitask_model_object(num_img_classes=img["num_classes"], num_tab_features=num_tab_features)
     try:
         result = _train_image_branch_impl(model_obj, img["train_img_gen"], img["val_img_gen"], num_tab_features)
     except Exception as e:
@@ -430,7 +432,8 @@ async def confusion_matrix_route(request):
             Y_val = np.array(tab["Y_val"], dtype=np.float32).reshape(-1, 1)
 
             # Build model and train only text branch
-            model = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
+            model = _build_multitask_model_impl(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
+            #model = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
             for layer in model.layers:
                 layer.trainable = "txt_" in layer.name or layer.name == "txt_output"
             model.compile(
@@ -481,8 +484,9 @@ async def confusion_matrix_route(request):
             class_indices = img["class_indices"]  # name -> index
             # index -> name in correct order
             names_by_index = [name for name, _idx in sorted(class_indices.items(), key=lambda kv: kv[1])]
+            model = _build_multitask_model_impl(num_img_classes=num_classes, num_tab_features=num_tab_features)
 
-            model = _create_multitask_model_object(num_img_classes=num_classes, num_tab_features=num_tab_features)
+            #model = _create_multitask_model_object(num_img_classes=num_classes, num_tab_features=num_tab_features)
             for layer in model.layers:
                 layer.trainable = "img_" in layer.name or layer.name == "img_output"
             model.compile(
@@ -572,8 +576,9 @@ async def confusion_matrix_image_route(request):
             Y_train = np.array(tab["Y_train"], dtype=np.float32).reshape(-1, 1)
             X_val = np.array(tab["X_val"], dtype=np.float32)
             Y_val = np.array(tab["Y_val"], dtype=np.float32).reshape(-1, 1)
+            model = _build_multitask_model_impl(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
 
-            model = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
+            #model = _create_multitask_model_object(num_img_classes=num_img_classes, num_tab_features=tab["num_features"])
             for layer in model.layers:
                 layer.trainable = "txt_" in layer.name or layer.name == "txt_output"
             model.compile(
@@ -607,8 +612,9 @@ async def confusion_matrix_image_route(request):
             num_classes = img["num_classes"]
             class_indices = img["class_indices"]
             labels = [name for name, _idx in sorted(class_indices.items(), key=lambda kv: kv[1])]
+            model = _build_multitask_model_impl(num_img_classes=num_img_classes, num_tab_features=num_tab_features)
 
-            model = _create_multitask_model_object(num_img_classes=num_classes, num_tab_features=num_tab_features)
+            #model = _create_multitask_model_object(num_img_classes=num_classes, num_tab_features=num_tab_features)
             for layer in model.layers:
                 layer.trainable = "img_" in layer.name or layer.name == "img_output"
             model.compile(
