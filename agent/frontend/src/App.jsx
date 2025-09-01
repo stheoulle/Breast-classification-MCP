@@ -5,6 +5,7 @@ import ImageClassifier from "./components/ImageClassifier";
 import TabularClassifier from "./components/TabularClassifier";
 import ConfusionMatrix from "./components/ConfusionMatrix";
 import Logs from "./components/Logs";
+import ShapExplain from "./components/ShapExplain";
 
 const API_BASE = window.__MCP_API_BASE__ || "http://localhost:8000";
 // If backend labels are generic (class_0, class_1, class_2), show these explicit names instead.
@@ -29,6 +30,8 @@ function App() {
   const [featuresText, setFeaturesText] = useState("[]");
   const [tabularPredicting, setTabularPredicting] = useState(false);
   const [tabularResult, setTabularResult] = useState(null);
+  const [explaining, setExplaining] = useState(false);
+  const [shapResult, setShapResult] = useState(null);
   // Confusion matrix controls
   const [modality, setModality] = useState("tabular"); // 'tabular' | 'image'
   const [epochs, setEpochs] = useState(5);
@@ -246,6 +249,50 @@ function App() {
     setTabularPredicting(false);
   }
 
+  // Explain with SHAP for a single instance
+  async function explainShap({ topK = 10, backgroundSize = 100, nsamples = 512 } = {}) {
+    let features;
+    try {
+      if (featuresText.trim().startsWith("[")) {
+        features = JSON.parse(featuresText);
+      } else {
+        features = featuresText
+          .split(/[\,\n\s]+/)
+          .map((s) => (s === "" ? null : Number(s)))
+          .filter((v) => v !== null && !Number.isNaN(v));
+      }
+    } catch (e) {
+      pushLog("Failed to parse features: provide JSON array or CSV", "error");
+      return;
+    }
+
+    if (!Array.isArray(features) || features.length !== 30) {
+      pushLog("features must be an array of 30 numbers (sklearn breast cancer)", "error");
+      return;
+    }
+
+    setExplaining(true);
+    setShapResult(null);
+    pushLog("Calling /explain_breast_cancer_shap...", "info");
+    try {
+      const res = await fetch(`${API_BASE}/explain_breast_cancer_shap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ features, top_k: topK, background_size: backgroundSize, nsamples }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        pushLog(`Error ${res.status}: ${JSON.stringify(data)}`, "error");
+      } else {
+        setShapResult(data);
+        pushLog(JSON.stringify(data, null, 2), "success");
+      }
+    } catch (e) {
+      pushLog(String(e), "error");
+    }
+    setExplaining(false);
+  }
+
   function onSelectImage(e) {
     const f = e.target.files?.[0];
     setImageFile(f || null);
@@ -308,6 +355,13 @@ function App() {
         onLoadSample={loadSampleFeatures}
         onPredict={predictTabular}
         explicitTextualNames={EXPLICIT_CLASS_NAMES_TEXTUAL}
+      />
+      <ShapExplain
+        featuresText={featuresText}
+        setFeaturesText={setFeaturesText}
+        explaining={explaining || running}
+        shapResult={shapResult}
+        onExplain={explainShap}
       />
       <ConfusionMatrix
         modality={modality}

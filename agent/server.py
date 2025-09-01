@@ -771,11 +771,17 @@ async def predict_tabular_route(request):
     if not isinstance(features, (list, tuple)) or len(features) != 30:
         return JSONResponse({"error": "features must be a list of 30 floats (sklearn breast cancer dataset)"}, status_code=400, headers=CORS_HEADERS)
 
-    # Preprocess features
+    # Preprocess features with the same StandardScaler used in training
     try:
+        # Fit scaler on the full sklearn breast cancer dataset, matching training logic
+        X_all, _y = load_breast_cancer(return_X_y=True)
+        X_all = np.asarray(X_all, dtype=np.float32)
+        scaler = StandardScaler().fit(X_all)
         X = np.array(features, dtype=np.float32).reshape(1, -1)
+        X_scaled = scaler.transform(X)
     except Exception as e:
-        return JSONResponse({"error": f"Failed to process features: {e}"}, status_code=400, headers=CORS_HEADERS)
+        # Fallback to unscaled if anything fails
+        X_scaled = np.array(features, dtype=np.float32).reshape(1, -1)
 
     # Load model
     try:
@@ -789,13 +795,13 @@ async def predict_tabular_route(request):
         model_inputs = model.inputs
         input_names = [getattr(t, "name", "").split(":")[0] for t in model_inputs]
         if len(model_inputs) == 1:
-            feed = X
+            feed = X_scaled
         else:
             feed = {}
             placed = False
             for name in input_names:
                 if "tabular" in name:
-                    feed[name] = X
+                    feed[name] = X_scaled
                     placed = True
             # find image input shape (None, H, W, C)
             for i, t in enumerate(model_inputs):
@@ -808,13 +814,13 @@ async def predict_tabular_route(request):
             if not placed:
                 # if we didn't find by name, assume first is tabular
                 first_name = input_names[0]
-                feed[first_name] = X
+                feed[first_name] = X_scaled
     except Exception:
         # Fallback: try positional 2-input assumption
         try:
-            feed = [np.zeros((1, 256, 256, 3), dtype=np.float32), X] if len(model.inputs) > 1 else X
+            feed = [np.zeros((1, 256, 256, 3), dtype=np.float32), X_scaled] if len(model.inputs) > 1 else X_scaled
         except Exception:
-            feed = X
+            feed = X_scaled
 
     # Predict
     try:
@@ -858,6 +864,244 @@ async def predict_tabular_route(request):
         },
         headers=CORS_HEADERS,
     )
+
+# ==============================
+# Explainability (SHAP) for Tabular Branch
+# ==============================
+
+def _explain_breast_cancer_shap_impl(
+    features: List[float],
+    model_path: Optional[str] = None,
+    background_size: int = 100,
+    nsamples: int = 512,
+    top_k: int = 10,
+):
+    """Generate a SHAP explanation for the tabular breast-cancer prediction.
+
+    Args:
+        features: List of 30 float features (Breast Cancer Wisconsin dataset order).
+        model_path: Optional path to a saved multitask model; defaults to saved_models/multitask_model_latest.keras.
+        background_size: Number of background samples for SHAP KernelExplainer.
+        nsamples: Number of samples for SHAP estimation (trade-off between speed and accuracy).
+        top_k: Number of most impactful features to return in the summary.
+
+    Returns:
+        JSON-serializable dict with prediction, base value, shap values, and top feature attributions.
+    """
+    # Validate input length
+    if not isinstance(features, (list, tuple)) or len(features) != 30:
+        return {
+            "error": "features must be a list of 30 floats (Breast Cancer Wisconsin dataset)",
+        }
+
+    # Resolve model path
+    if not model_path:
+        model_path = os.path.join(os.getcwd(), "saved_models", "multitask_model_latest.keras")
+    if not os.path.exists(model_path):
+        return {"error": f"Model not found at '{model_path}'"}
+    print("Model found.")
+    # Safe import of shap (optional dependency at runtime)
+    try:
+        import shap  # type: ignore
+    except Exception as e:
+        return {"error": f"SHAP is not available: {e}. Please install 'shap' in this environment."}
+    print("SHAP imported.")
+    # Prepare scaler and feature names for consistent preprocessing
+    try:
+        X_all, _y = load_breast_cancer(return_X_y=True)
+        X_all = np.asarray(X_all, dtype=np.float32)
+        try:
+            feature_names = [str(n) for n in list(load_breast_cancer().feature_names)]  # type: ignore
+        except Exception:
+            feature_names = [f"feature_{i}" for i in range(X_all.shape[1])]
+        scaler = StandardScaler()
+        X_all_scaled = scaler.fit_transform(X_all)
+        print("Scaler prepared.")
+    except Exception:
+        # Fallback if sklearn load fails
+        feature_names = [f"feature_{i}" for i in range(30)]
+        scaler = StandardScaler()
+        X_all_scaled = scaler.fit_transform(np.zeros((100, 30), dtype=np.float32))
+
+    # Scale incoming features to match model training
+    try:
+        x_input = np.asarray(features, dtype=np.float32).reshape(1, -1)
+        x_input_scaled = scaler.transform(x_input)
+        print("Input features scaled.")
+    except Exception as e:
+        return {"error": f"Failed to scale features: {e}"}
+
+    # Load model
+    try:
+        model = _get_or_load_model(model_path)
+        print("Model found.")
+    except Exception as e:
+        return {"error": f"Failed to load model: {e}"}
+
+    # Build a prediction function for the tabular head
+    def _predict_tabular_head(X: np.ndarray) -> np.ndarray:
+        try:
+            model_inputs = model.inputs
+            input_names = [getattr(t, "name", "").split(":")[0] for t in model_inputs]
+            feed = {}
+            for name in input_names:
+                if "tabular" in name:
+                    feed[name] = X.astype(np.float32)
+                elif "image" in name:
+                    feed[name] = np.zeros((X.shape[0], 256, 256, 3), dtype=np.float32)
+            if not feed:
+                # Positional fallback
+                if len(model_inputs) > 1:
+                    feed = [np.zeros((X.shape[0], 256, 256, 3), dtype=np.float32), X.astype(np.float32)]
+                else:
+                    feed = X.astype(np.float32)
+
+            pred = model.predict(feed, verbose=0)
+            print("Prediction made.")
+            # Extract txt_output
+            if isinstance(pred, (list, tuple)):
+                if len(pred) == 0:
+                    return np.full((X.shape[0],), np.nan, dtype=np.float32)
+                try:
+                    out_names = [getattr(t, "name", "").split(":")[0] for t in model.outputs]
+                    if "txt_output" in out_names and out_names.index("txt_output") < len(pred):
+                        prob = pred[out_names.index("txt_output")]
+                    else:
+                        prob = pred[1] if len(pred) > 1 else pred[0]
+                except Exception:
+                    prob = pred[1] if len(pred) > 1 else pred[0]
+            else:
+                prob = pred
+            prob = np.asarray(prob).reshape(-1)
+            print("Prediction made. @")
+            return prob
+        except Exception as e:
+            # In SHAP, exceptions can be opaque; surface as NaNs to avoid crashes
+            return np.full((X.shape[0],), np.nan, dtype=np.float32)
+
+    # Background data for SHAP KernelExplainer
+    try:
+        print("Preparing background data for SHAP...")
+        if X_all_scaled.shape[0] > background_size:
+            # random sample without replacement for speed
+            idx = np.random.choice(X_all_scaled.shape[0], size=background_size, replace=False)
+            background = X_all_scaled[idx]
+        else:
+            background = X_all_scaled
+        print(f"Background data shape: {background.shape}")
+    except Exception:
+        background = np.zeros((background_size, 30), dtype=np.float32)
+
+    # Build SHAP explainer (KernelExplainer for black-box probability function)
+    try:
+        print("Creating SHAP KernelExplainer...")
+        explainer = shap.KernelExplainer(_predict_tabular_head, background)
+        print("SHAP explainer created.")
+        shap_values = explainer.shap_values(x_input_scaled, nsamples=int(nsamples))
+        print("SHAP values obtained.")
+        base_value = explainer.expected_value
+        print("Base value obtained.")
+        if isinstance(shap_values, list):
+            # For binary scalar output shap returns a 1D vector or list of one vector
+            shap_arr = np.asarray(shap_values[0] if len(shap_values) > 0 else np.zeros((x_input_scaled.shape[1],)), dtype=np.float32).reshape(-1)
+            print("SHAP values reshaped.")
+        else:
+            shap_arr = np.asarray(shap_values, dtype=np.float32).reshape(-1)
+            print("SHAP values reshaped.")
+        base_arr = np.atleast_1d(np.asarray(base_value, dtype=np.float64))
+        print("Base value reshaped.")
+        base_val = float(base_arr.reshape(-1)[0])
+        print("SHAP values computed.")
+    except Exception as e:
+        return {"error": f"Failed to compute SHAP values: {e}"}
+
+    # Current prediction
+    try:
+        pred_prob = float(_predict_tabular_head(x_input_scaled)[0])
+        print("Current prediction probability:", pred_prob)
+    except Exception as e:
+        pred_prob = float("nan")
+
+    # Build importance summary
+    imps = [
+        {
+            "index": i,
+            "name": feature_names[i] if i < len(feature_names) else f"feature_{i}",
+            "value": float(features[i]),
+            "shap": float(shap_arr[i]) if i < shap_arr.size else 0.0,
+            "abs_shap": float(abs(shap_arr[i])) if i < shap_arr.size else 0.0,
+        }
+        for i in range(30)
+    ]
+    print("Importance summary prepared.")
+    imps_sorted = sorted(imps, key=lambda d: d["abs_shap"], reverse=True)
+    top_k = max(1, int(top_k))
+    print(f"Top {top_k} features selected.")
+
+    return {
+        "model_path": model_path,
+        "predicted_probability": pred_prob,
+        "predicted_class": int(pred_prob > 0.5) if not np.isnan(pred_prob) else None,
+        "base_value": base_val,
+        "feature_names": feature_names,
+        "features": [float(v) for v in features],
+        "features_scaled": [float(v) for v in x_input_scaled.reshape(-1)],
+        "shap_values": [float(v) for v in shap_arr.tolist()],
+        "top_features": imps_sorted[:top_k],
+        "background_size": int(len(background)),
+        "nsamples": int(nsamples),
+    }
+
+@mcp.tool
+def explain_breast_cancer_shap(
+    features: List[float],
+    model_path: Optional[str] = None,
+    background_size: int = 100,
+    nsamples: int = 512,
+    top_k: int = 10,
+):
+    # Tool wrapper delegates to implementation
+    return _explain_breast_cancer_shap_impl(
+        features=features,
+        model_path=model_path,
+        background_size=background_size,
+        nsamples=nsamples,
+        top_k=top_k,
+    )
+
+# HTTP wrapper for SHAP explanation
+@mcp.custom_route("/explain_breast_cancer_shap", methods=["POST"])
+async def explain_breast_cancer_shap_route(request):
+    content_type = request.headers.get("content-type", "")
+    if not content_type.startswith("application/json"):
+        return JSONResponse({"error": "Content-Type must be application/json"}, status_code=400, headers=CORS_HEADERS)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    features = body.get("features")
+    if not isinstance(features, (list, tuple)) or len(features) != 30:
+        return JSONResponse({"error": "features must be a list of 30 floats (Breast Cancer Wisconsin dataset)"}, status_code=400, headers=CORS_HEADERS)
+
+    model_path = body.get("model_path")
+    background_size = int(body.get("background_size", 100))
+    nsamples = int(body.get("nsamples", 512))
+    top_k = int(body.get("top_k", 10))
+
+    try:
+        result = _explain_breast_cancer_shap_impl(
+            features=[float(v) for v in features],
+            model_path=model_path,
+            background_size=background_size,
+            nsamples=nsamples,
+            top_k=top_k,
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500, headers=CORS_HEADERS)
+
+    return JSONResponse(result, headers=CORS_HEADERS)
 
 if __name__ == "__main__":
     # Run after all routes are registered so POST /predict_tabular and others are available

@@ -16,3 +16,6 @@ scipy>=1.10
 transformers>=4.40
 torch>=2.6
 safetensors>=0.4
+
+# Explainability
+shap>=0.45
