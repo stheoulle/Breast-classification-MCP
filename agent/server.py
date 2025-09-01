@@ -2,7 +2,10 @@ from fastmcp import FastMCP
 from starlette.responses import PlainTextResponse, JSONResponse, Response
 import logging
 import os, glob
+# Force CPU by default and avoid torchvision imports from transformers at import time
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ.setdefault("TRANSFORMERS_NO_TORCHVISION", "1")
+os.environ.setdefault("DISABLE_TRANSFORMERS_IMAGE_TRANSFORMS", "1")
 
 import numpy as np
 import pandas as pd
@@ -22,9 +25,20 @@ from io import BytesIO
 from datetime import datetime
 import shutil
 import json
-
+import asyncio
+import base64
+from typing import List, Optional, Tuple, Any
+from sklearn.feature_extraction.text import HashingVectorizer
+from scipy import sparse as _sp
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
+import torch
+# Avoid importing transformers at module import time to prevent pulling in torchvision.
+# We'll import inside helper functions when needed.
 
 mcp = FastMCP("agent-llm-server")
+EXPLICIT_CLASS_NAMES = ["benign", "malignant", "normal"]  # index 0,1,2
+
 
 
 # Provide a lightweight CORS solution: set CORS headers on health and handle OPTIONS preflight for all paths.
@@ -506,6 +520,8 @@ async def confusion_matrix_image_route(request):
 # Simple caches so we don't reload models/labels each request
 _MODEL_CACHE = {}
 _LABELS_CACHE = {}
+_LOCAL_TXT_TOKENIZER = None
+_LOCAL_TXT_MODEL = None
 
 def _load_labels_for_model(model_path: str, num_classes: int):
     """Try to load labels from sidecar JSON; fallback to class_0..N-1."""
@@ -845,4 +861,5 @@ async def predict_tabular_route(request):
 
 if __name__ == "__main__":
     # Run after all routes are registered so POST /predict_tabular and others are available
-    mcp.run(transport="http")  # exposes /health and all @mcp.tool automatically
+    # Use FastMCP's streamable-http transport for an HTTP server
+    mcp.run(transport="streamable-http", host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8000")))
