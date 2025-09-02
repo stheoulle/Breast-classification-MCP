@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import Plot from "react-plotly.js";
 
 export default function ShapExplain({
   featuresText,
@@ -105,6 +106,88 @@ export default function ShapExplain({
               <strong>nsamples:</strong> {shapResult.nsamples}
             </div>
           </div>
+
+          {/* SHAP Bar Chart (summary plot for single sample) */}
+          {Array.isArray(shapResult.shap_values) && Array.isArray(shapResult.feature_names) && (
+            <div style={{ marginTop: 18 }}>
+              <h4 style={{ margin: "0 0 6px", color: "#314570" }}>SHAP Value Bar Chart</h4>
+              <Plot
+                data={[{
+                  x: shapResult.feature_names,
+                  y: shapResult.shap_values,
+                  type: "bar",
+                  marker: { color: shapResult.shap_values.map(v => v > 0 ? "#2b7cff" : "#ff4b4b") },
+                }]}
+                layout={{
+                  width: 700,
+                  height: 320,
+                  margin: { l: 40, r: 10, t: 30, b: 80 },
+                  xaxis: { title: "Feature", tickangle: -45 },
+                  yaxis: { title: "SHAP value" },
+                  showlegend: false,
+                }}
+                config={{ displayModeBar: false }}
+              />
+            </div>
+          )}
+
+          {/* SHAP Waterfall (force-like) plot for single sample */}
+          {Array.isArray(shapResult.shap_values) && Array.isArray(shapResult.feature_names) && typeof shapResult.base_value === "number" && (
+            <div style={{ marginTop: 18 }}>
+              <h4 style={{ margin: "0 0 6px", color: "#314570" }}>SHAP Waterfall Plot</h4>
+              <Plot
+                data={[{
+                  type: "waterfall",
+                  orientation: "v",
+                  x: shapResult.feature_names,
+                  y: shapResult.shap_values,
+                  base: shapResult.base_value,
+                  measure: Array(30).fill("relative"),
+                  text: shapResult.shap_values.map(v => v.toExponential(2)),
+                  decreasing: { marker: { color: "#ff4b4b" } },
+                  increasing: { marker: { color: "#2b7cff" } },
+                  totals: { marker: { color: "#314570" } },
+                }]}
+                layout={{
+                  width: 700,
+                  height: 320,
+                  margin: { l: 40, r: 10, t: 30, b: 80 },
+                  xaxis: { title: "Feature", tickangle: -45 },
+                  yaxis: { title: "SHAP value" },
+                  showlegend: false,
+                }}
+                config={{ displayModeBar: false }}
+              />
+            </div>
+          )}
+
+          {/* SHAP Dependence Plot (scatter for each feature) */}
+          {Array.isArray(shapResult.shap_values) && Array.isArray(shapResult.features) && Array.isArray(shapResult.feature_names) && (
+            <div style={{ marginTop: 18 }}>
+              <h4 style={{ margin: "0 0 6px", color: "#314570" }}>SHAP Dependence Plot</h4>
+              <Plot
+                data={[{
+                  x: shapResult.features,
+                  y: shapResult.shap_values,
+                  text: shapResult.feature_names,
+                  mode: "markers",
+                  type: "scatter",
+                  marker: { color: shapResult.shap_values, colorscale: "RdBu", size: 10 },
+                }]}
+                layout={{
+                  width: 700,
+                  height: 320,
+                  margin: { l: 40, r: 10, t: 30, b: 60 },
+                  xaxis: { title: "Feature value" },
+                  yaxis: { title: "SHAP value" },
+                  showlegend: false,
+                }}
+                config={{ displayModeBar: false }}
+              />
+            </div>
+          )}
+
+          {/* Top features table (unchanged) */}
           {Array.isArray(shapResult.top_features) && shapResult.top_features.length > 0 && (
             <div style={{ marginTop: 10 }}>
               <h4 style={{ margin: "0 0 6px", color: "#314570" }}>Top features</h4>
