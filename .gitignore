@@ -5,3 +5,6 @@ agent/frontend/node_modules
 agent/.github
 agent/.venv
 agent/frontend/saved_models
+agent/Dataset_mammography
+agent/saved_models
+agent/.env
