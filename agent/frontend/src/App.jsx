@@ -6,8 +6,8 @@ import TabularClassifier from "./components/TabularClassifier";
 import ConfusionMatrix from "./components/ConfusionMatrix";
 import Logs from "./components/Logs";
 import ShapExplain from "./components/ShapExplain";
-
-const API_BASE = window.__MCP_API_BASE__ || "http://localhost:8000";
+// window.__MCP_API_BASE__ || 
+const API_BASE = "http://localhost:8001";
 // If backend labels are generic (class_0, class_1, class_2), show these explicit names instead.
 // Order: benign (0), malignant (1), normal (2)
 const EXPLICIT_CLASS_NAMES = ["benign", "malignant", "normal"]; // index 0,1,2

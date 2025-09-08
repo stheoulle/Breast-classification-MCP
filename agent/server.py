@@ -12,7 +12,7 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.applications import DenseNet121
-from tensorflow.keras.layers import Input, Dense, Dropout, GlobalAveragePooling2D
+from tensorflow.keras.layers import Input, Dense, Dropout, GlobalAveragePooling2D, BatchNormalization, Flatten
 from tensorflow.keras.models import Model, load_model
 from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split
@@ -128,6 +128,7 @@ def load_tabular_data():
 def _build_multitask_model_impl(num_img_classes: int, num_tab_features: int):
     image_input = Input(shape=(256, 256, 3), name='image_input')
     base_model = DenseNet121(weights='imagenet', include_top=False, input_tensor=image_input)
+    # Freeze backbone initially
     for layer in base_model.layers:
         layer.trainable = False
     x_img = GlobalAveragePooling2D()(base_model.output)
@@ -135,13 +136,20 @@ def _build_multitask_model_impl(num_img_classes: int, num_tab_features: int):
     x_img = Dropout(0.5)(x_img)
     img_output = Dense(num_img_classes, activation='softmax', name='img_output')(x_img)
 
+    # -----------------------------
+    # Tabular branch
+    # -----------------------------
     tab_input = Input(shape=(num_tab_features,), name='tabular_input')
     x_tab = Dense(64, activation='relu', name="txt_dense1")(tab_input)
     x_tab = Dropout(0.3)(x_tab)
     x_tab = Dense(32, activation='relu', name="txt_dense2")(x_tab)
     txt_output = Dense(1, activation='sigmoid', name='txt_output')(x_tab)
 
+    # -----------------------------
+    # Final model
+    # -----------------------------
     model = Model(inputs=[image_input, tab_input], outputs=[img_output, txt_output])
+
 
     return {
         "model_name": model.name,
@@ -1106,4 +1114,4 @@ async def explain_breast_cancer_shap_route(request):
 if __name__ == "__main__":
     # Run after all routes are registered so POST /predict_tabular and others are available
     # Use FastMCP's streamable-http transport for an HTTP server
-    mcp.run(transport="streamable-http", host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8000")))
+    mcp.run(transport="streamable-http", host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8001")))
