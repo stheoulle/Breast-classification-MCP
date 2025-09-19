@@ -509,16 +509,6 @@ async def confusion_matrix_image_route(request):
 
     headers = {**CORS_HEADERS, "Content-Type": "image/png"}
     return Response(content=buf.getvalue(), media_type="image/png", headers=headers)
-# Note: training-specific endpoints like train_text_branch and train_image_branch expect complex
-# Python objects (models/generators). They are not wrapped here. If you need them over HTTP we
-# should design a serialized protocol or a job system. For now the frontend can use the
-# above wrapper endpoints for basic interactions.
-
-
-# Note: training-specific endpoints like train_text_branch and train_image_branch expect complex
-# Python objects (models/generators). They are not wrapped here. If you need them over HTTP we
-# should design a serialized protocol or a job system. For now the frontend can use the
-# above wrapper endpoints for basic interactions.
 
 
 # ==============================
